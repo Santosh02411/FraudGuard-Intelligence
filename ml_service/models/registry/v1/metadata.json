@@ -1,0 +1,12 @@
+{
+  "version": "v1",
+  "trained_at": "2026-08-21T19:49:07.107037+00:00",
+  "best_model_type": "xgboost",
+  "pr_auc": 0.9903,
+  "previous_promoted_pr_auc": null,
+  "promoted": true,
+  "n_rows": 154778,
+  "n_features": 46,
+  "fraud_rate": 0.015,
+  "notes": "Production baseline v1: expanded feature set (velocity, time-since-last, spending zscore, geo-distance, device/IP fingerprinting)"
+}

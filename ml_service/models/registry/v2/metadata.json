@@ -1,0 +1,12 @@
+{
+  "version": "v2",
+  "trained_at": "2026-08-22T12:19:05.842932+00:00",
+  "best_model_type": "random_forest",
+  "pr_auc": 0.943,
+  "previous_promoted_pr_auc": 0.9903,
+  "promoted": true,
+  "n_rows": 155303,
+  "n_features": 43,
+  "fraud_rate": 0.0152,
+  "notes": "v3 CRITICAL FIX: removed feature leak in repeat_retailer (was category-membership proxy, now genuine merchant-history lookup) and removed online_order/used_chip/used_pin_number from model features since they are hardcoded constants in production and were causing systematic miscalibration (a benign first-time transaction was scoring 99.97% fraud)"
+}

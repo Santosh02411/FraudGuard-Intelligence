@@ -1,0 +1,9 @@
+{
+  "version": "v3",
+  "activated_at": "2026-10-24T04:25:31.990828+00:00",
+  "previous": "v4",
+  "reason": "End-to-end rollback test back to v3. (approved by second_admin)",
+  "actor": "second_admin",
+  "change_id": 2,
+  "kind": "rollback"
+}

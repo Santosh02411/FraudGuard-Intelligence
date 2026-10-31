@@ -1,0 +1,352 @@
+{
+  "best_model": "random_forest",
+  "results": {
+    "logistic_regression": {
+      "precision": 0.5173,
+      "recall": 0.9222,
+      "f1_score": 0.6628,
+      "roc_auc": 0.9908,
+      "pr_auc": 0.9351,
+      "confusion_matrix": {
+        "true_negative": 30248,
+        "false_positive": 376,
+        "false_negative": 34,
+        "true_positive": 403
+      },
+      "classification_report": {
+        "0": {
+          "precision": 0.9988772207912291,
+          "recall": 0.9877220480668757,
+          "f1-score": 0.9932683151085279,
+          "support": 30624.0
+        },
+        "1": {
+          "precision": 0.5173299101412067,
+          "recall": 0.9221967963386728,
+          "f1-score": 0.662828947368421,
+          "support": 437.0
+        },
+        "accuracy": 0.9868001674125109,
+        "macro avg": {
+          "precision": 0.7581035654662178,
+          "recall": 0.9549594222027742,
+          "f1-score": 0.8280486312384745,
+          "support": 31061.0
+        },
+        "weighted avg": {
+          "precision": 0.9921022884080456,
+          "recall": 0.9868001674125109,
+          "f1-score": 0.9886193339520156,
+          "support": 31061.0
+        }
+      }
+    },
+    "random_forest": {
+      "precision": 0.9949,
+      "recall": 0.9016,
+      "f1_score": 0.946,
+      "roc_auc": 0.9951,
+      "pr_auc": 0.9598,
+      "confusion_matrix": {
+        "true_negative": 30622,
+        "false_positive": 2,
+        "false_negative": 43,
+        "true_positive": 394
+      },
+      "classification_report": {
+        "0": {
+          "precision": 0.9985977498777108,
+          "recall": 0.9999346917450366,
+          "f1-score": 0.999265773629852,
+          "support": 30624.0
+        },
+        "1": {
+          "precision": 0.9949494949494949,
+          "recall": 0.9016018306636155,
+          "f1-score": 0.9459783913565426,
+          "support": 437.0
+        },
+        "accuracy": 0.998551237886739,
+        "macro avg": {
+          "precision": 0.9967736224136028,
+          "recall": 0.950768261204326,
+          "f1-score": 0.9726220824931973,
+          "support": 31061.0
+        },
+        "weighted avg": {
+          "precision": 0.9985464222513102,
+          "recall": 0.998551237886739,
+          "f1-score": 0.9985160686604874,
+          "support": 31061.0
+        }
+      }
+    },
+    "xgboost": {
+      "precision": 0.8899,
+      "recall": 0.9245,
+      "f1_score": 0.9068,
+      "roc_auc": 0.9909,
+      "pr_auc": 0.9516,
+      "confusion_matrix": {
+        "true_negative": 30574,
+        "false_positive": 50,
+        "false_negative": 33,
+        "true_positive": 404
+      },
+      "classification_report": {
+        "0": {
+          "precision": 0.9989218152710164,
+          "recall": 0.9983672936259144,
+          "f1-score": 0.9986444774705623,
+          "support": 30624.0
+        },
+        "1": {
+          "precision": 0.8898678414096917,
+          "recall": 0.9244851258581236,
+          "f1-score": 0.9068462401795735,
+          "support": 437.0
+        },
+        "accuracy": 0.9973278387688741,
+        "macro avg": {
+          "precision": 0.944394828340354,
+          "recall": 0.961426209742019,
+          "f1-score": 0.9527453588250678,
+          "support": 31061.0
+        },
+        "weighted avg": {
+          "precision": 0.997387525113668,
+          "recall": 0.9973278387688741,
+          "f1-score": 0.9973529598215438,
+          "support": 31061.0
+        }
+      }
+    }
+  },
+  "evaluation": {
+    "dataset": "synthetic",
+    "disclaimer": "SYNTHETIC-DATA RESULTS: these metrics come from ml_service/generate_dataset.py, not real transactions. They validate the pipeline, not real-world fraud-detection accuracy.",
+    "protocol": "chronological_purged_val_selected_val_calibrated_v2",
+    "split": {
+      "split": "chronological",
+      "train_until": "2026-03-10 03:27:49.103550",
+      "validation_until": "2026-03-28 03:20:21.411424",
+      "rows": {
+        "train": 93181,
+        "validation": 31061,
+        "test": 31061
+      },
+      "fraud": {
+        "train": 1472,
+        "validation": 452,
+        "test": 437
+      },
+      "purged_rows_for_straddling_fraud_episodes": {
+        "train": 0,
+        "validation": 0
+      }
+    },
+    "model_selected_on": "validation PR-AUC (not test)",
+    "validation_pr_auc_by_model": {
+      "logistic_regression": 0.9134,
+      "random_forest": 0.9422,
+      "xgboost": 0.928
+    },
+    "calibration": {
+      "method": "isotonic",
+      "fitted_on": "validation split (held out from training and from the test set)",
+      "n_validation_rows": 31061,
+      "n_validation_positives": 452,
+      "validation_fraud_rate": 0.014552
+    },
+    "test_calibrated": {
+      "n": 31061,
+      "n_fraud": 437,
+      "fraud_rate": 0.014069,
+      "pr_auc": 0.954,
+      "pr_auc_95ci": [
+        0.9362,
+        0.9713
+      ],
+      "roc_auc": 0.9949,
+      "brier": 0.00124,
+      "ece": 0.00047,
+      "baseline_pr_auc_if_random": 0.0141,
+      "operating_points": [
+        {
+          "threshold": 0.05,
+          "flagged": 572,
+          "flag_rate": 0.018415,
+          "precision": 0.729,
+          "recall": 0.9542,
+          "false_positive_rate": 0.005061,
+          "tp": 417,
+          "fp": 155,
+          "fn": 20,
+          "tn": 30469
+        },
+        {
+          "threshold": 0.1,
+          "flagged": 509,
+          "flag_rate": 0.016387,
+          "precision": 0.8055,
+          "recall": 0.9382,
+          "false_positive_rate": 0.003233,
+          "tp": 410,
+          "fp": 99,
+          "fn": 27,
+          "tn": 30525
+        },
+        {
+          "threshold": 0.2,
+          "flagged": 416,
+          "flag_rate": 0.013393,
+          "precision": 0.9712,
+          "recall": 0.9245,
+          "false_positive_rate": 0.000392,
+          "tp": 404,
+          "fp": 12,
+          "fn": 33,
+          "tn": 30612
+        },
+        {
+          "threshold": 0.4,
+          "flagged": 415,
+          "flag_rate": 0.013361,
+          "precision": 0.9735,
+          "recall": 0.9245,
+          "false_positive_rate": 0.000359,
+          "tp": 404,
+          "fp": 11,
+          "fn": 33,
+          "tn": 30613
+        },
+        {
+          "threshold": 0.7,
+          "flagged": 394,
+          "flag_rate": 0.012685,
+          "precision": 0.9975,
+          "recall": 0.8993,
+          "false_positive_rate": 3.3e-05,
+          "tp": 393,
+          "fp": 1,
+          "fn": 44,
+          "tn": 30623
+        }
+      ],
+      "review_capacity": [
+        {
+          "capacity_frac": 0.005,
+          "reviewed": 155,
+          "precision_at_capacity": 0.9935,
+          "recall_at_capacity": 0.3524,
+          "fraud_caught": 154,
+          "fraud_missed": 283,
+          "score_at_cutoff": 1.0
+        },
+        {
+          "capacity_frac": 0.01,
+          "reviewed": 311,
+          "precision_at_capacity": 0.9968,
+          "recall_at_capacity": 0.7094,
+          "fraud_caught": 310,
+          "fraud_missed": 127,
+          "score_at_cutoff": 1.0
+        },
+        {
+          "capacity_frac": 0.02,
+          "reviewed": 621,
+          "precision_at_capacity": 0.6715,
+          "recall_at_capacity": 0.9542,
+          "fraud_caught": 417,
+          "fraud_missed": 20,
+          "score_at_cutoff": 0.04065
+        },
+        {
+          "capacity_frac": 0.05,
+          "reviewed": 1553,
+          "precision_at_capacity": 0.2737,
+          "recall_at_capacity": 0.9725,
+          "fraud_caught": 425,
+          "fraud_missed": 12,
+          "score_at_cutoff": 0.004245
+        }
+      ],
+      "calibration": [
+        {
+          "bin": "0.00-0.01",
+          "n": 29800,
+          "mean_predicted": 0.0005,
+          "observed_fraud_rate": 0.0005,
+          "fraud_count": 14
+        },
+        {
+          "bin": "0.01-0.02",
+          "n": 558,
+          "mean_predicted": 0.0156,
+          "observed_fraud_rate": 0.0108,
+          "fraud_count": 6
+        },
+        {
+          "bin": "0.02-0.05",
+          "n": 131,
+          "mean_predicted": 0.0406,
+          "observed_fraud_rate": 0.0,
+          "fraud_count": 0
+        },
+        {
+          "bin": "0.05-0.10",
+          "n": 63,
+          "mean_predicted": 0.0571,
+          "observed_fraud_rate": 0.1111,
+          "fraud_count": 7
+        },
+        {
+          "bin": "0.10-0.20",
+          "n": 93,
+          "mean_predicted": 0.1144,
+          "observed_fraud_rate": 0.0645,
+          "fraud_count": 6
+        },
+        {
+          "bin": "0.20-0.40",
+          "n": 1,
+          "mean_predicted": 0.3002,
+          "observed_fraud_rate": 0.0,
+          "fraud_count": 0
+        },
+        {
+          "bin": "0.40-0.60",
+          "n": 21,
+          "mean_predicted": 0.432,
+          "observed_fraud_rate": 0.5238,
+          "fraud_count": 11
+        },
+        {
+          "bin": "0.60-0.80",
+          "n": 0,
+          "mean_predicted": null,
+          "observed_fraud_rate": null,
+          "fraud_count": 0
+        },
+        {
+          "bin": "0.80-1.00",
+          "n": 394,
+          "mean_predicted": 1.0,
+          "observed_fraud_rate": 0.9975,
+          "fraud_count": 393
+        }
+      ]
+    },
+    "test_raw_model_output": {
+      "pr_auc": 0.9598,
+      "brier": 0.00241,
+      "ece": 0.01598
+    },
+    "recommended_thresholds": {
+      "medium": 4.1,
+      "high": 16.7,
+      "basis": "medium = score at 2% review capacity on the validation set; high = lowest score with >= 80% validation precision"
+    },
+    "score_meaning": "fraud_score = calibrated probability of fraud x 100, estimated on a held-out validation population with a 1.46% fraud rate. It is a probability, not a decision: risk levels come from the admin-configurable risk policy."
+  }
+}

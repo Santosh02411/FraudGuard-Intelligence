@@ -1,0 +1,133 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# ==============================================================
+# Deploys the backend and ML service as Docker-based web services, plus
+# a managed Postgres database, from this one file: Render dashboard ->
+# New -> Blueprint -> point at this repo.
+#
+# NOT independently verified against a live Render deploy (this repo was
+# prepared without Render account access) — the shape follows Render's
+# documented Blueprint spec, but double-check field names against
+# https://render.com/docs/blueprint-spec if Render's schema has moved on
+# since this was written. A few values are intentionally left as
+# `sync: false` (Render will prompt for them in the dashboard) rather
+# than guessed at, since they're deployment-specific:
+#   - CORS_ALLOWED_ORIGINS: your deployed frontend's exact origin
+#     (e.g. https://fraudguard.vercel.app) — set AFTER the frontend is
+#     deployed and you know its real URL.
+#   - ML_SERVICE_URL: the ML service is private, so use its INTERNAL
+#     address (shown on its dashboard page, e.g.
+#     http://fraudguard-ml-service:8001) — paste it in the dashboard.
+#     (Blueprint `fromService` can inject host:port but not the http://
+#     scheme, so it isn't used here.)
+#   - ADMIN_PASSWORD: pick a real one — don't ship admin123 anywhere
+#     public (see README's Security section).
+#   - SMTP_HOST / SMTP_USER / SMTP_PASS: a real SMTP provider (e.g.
+#     SendGrid, Postmark, SES) for password-reset and verification
+#     emails to actually be delivered — see services/emailService.js.
+#     Without these, config/env.js refuses to boot in production rather
+#     than silently only logging emails to the console.
+#   - FRONTEND_URL: your deployed frontend's exact origin — the emailed
+#     verification/reset links point here.
+
+# --- Production safety notes ---------------------------------------
+#   * The ML service is a PRIVATE service (type: pserv): it has no public
+#     URL, so only your other Render services can reach it. It ALSO
+#     requires the two keys below (defense in depth — never rely on
+#     network position alone). Private services need a paid instance type.
+#   * ML_SERVICE_API_KEY / ML_ADMIN_API_KEY come from one generated
+#     env-var group shared by backend and ML service. The service key
+#     scores transactions; the admin key alone can reload / roll back /
+#     promote models.
+#   * Demo data is OFF. SEED_ON_BOOT is deliberately absent; the backend
+#     refuses to start in production if it is set (config/env.js).
+#     Seeded demo accounts use a publicly known password, so never seed a
+#     deployment that holds real customers. For a throwaway demo
+#     deployment, use a SEPARATE Blueprint/environment and set
+#     SEED_ON_BOOT=true + ALLOW_DEMO_SEED_IN_PRODUCTION=true +
+#     DEMO_USER_PASSWORD=<long unique value> there.
+#   * DATABASE: the `free` Postgres plan is for evaluation only — Render
+#     expires free databases and does not provide the backups a real
+#     deployment needs. Before real users: pick a paid plan, confirm
+#     automated backups / point-in-time recovery are enabled in the
+#     dashboard, and do a test restore. (Verify current plan limits at
+#     https://render.com/docs/postgresql — this file can't check them.)
+
+envVarGroups:
+  - name: fraudguard-ml-auth
+    envVars:
+      - key: ML_SERVICE_API_KEY
+        generateValue: true
+      - key: ML_ADMIN_API_KEY
+        generateValue: true
+
+databases:
+  - name: fraudguard-db
+    plan: free # EVALUATION ONLY — see the DATABASE note above
+    databaseName: fraudguard
+    user: fraudguard
+
+services:
+  - type: pserv # private: not reachable from the public internet
+    name: fraudguard-ml-service
+    runtime: docker
+    dockerfilePath: ./ml_service/Dockerfile
+    dockerContext: ./ml_service
+    plan: starter # private services are not available on the free plan
+    healthCheckPath: /health
+    # MODEL STATE NEEDS A PERSISTENT DISK. The registry, the active-version
+    # pointer (models/current_version.json) and the persisted monitoring
+    # database (models/monitor.db) live under /app/models; on an ephemeral
+    # filesystem a promotion would silently revert on the next restart.
+    # Render disks start EMPTY and hide the image's baked-in models/, so copy
+    # the registry onto the disk once (see docs/MODEL_GOVERNANCE.md). Only one
+    # ML instance may own the disk / monitor.db.
+    disk:
+      name: fraudguard-ml-models
+      mountPath: /app/models
+      sizeGB: 1
+    envVars:
+      - key: ML_ENV
+        value: production # refuses to boot without valid keys; hides /docs
+      - key: MODEL_SIGNING_KEY
+        sync: false # HMAC key for model manifests; keep it outside the registry
+      - key: MONITOR_DB_PATH
+        value: /app/models/monitor.db
+      - fromGroup: fraudguard-ml-auth
+
+  - type: web
+    name: fraudguard-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true # Render generates a random 32+ char value
+      - key: DATABASE_URL
+        fromDatabase:
+          name: fraudguard-db
+          property: connectionString
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false # set to your deployed frontend's origin — see note above
+      - key: REDIS_URL
+        sync: false # REQUIRED if you run more than one backend instance (Socket.IO adapter); a Render Key Value URL works
+      - key: ML_SERVICE_URL
+        sync: false # the ML service's INTERNAL address, e.g. http://fraudguard-ml-service:8001
+      - fromGroup: fraudguard-ml-auth
+      - key: ADMIN_PASSWORD
+        sync: false # pick a real password, don't leave this unset in production
+      - key: FRONTEND_URL
+        sync: false # your deployed frontend's origin — used to build emailed links
+      - key: SMTP_HOST
+        sync: false # required in production — see note above
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      # No SEED_ON_BOOT here on purpose — demo seeding is refused in
+      # production (see "Production safety notes" at the top).

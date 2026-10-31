@@ -1,0 +1,258 @@
+{
+  "name": "fraudguard-backend",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "seed": "node scripts/seedDemoData.js",
+    "seed:reset": "node scripts/seedDemoData.js --reset",
+    "test": "jest",
+    "test:unit": "jest --testPathIgnorePatterns tests/perf tests/e2e-fullstack tests/e2e-cognee",
+    "test:integration": "jest tests/integration",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint . --ext .js",
+    "test:postgres": "bash scripts/test-postgres.sh",
+    "test:perf": "jest --runInBand --testMatch '**/tests/perf/*.perf.js' --testTimeout 600000",
+    "test:e2e:fullstack": "bash scripts/e2e-fullstack.sh",
+    "test:e2e:cognee": "jest --runInBand --testMatch '**/tests/e2e-cognee/*.e2e.js'"
+  },
+  "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^13.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.2.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.0",
+    "nodemailer": "^9.0.5",
+    "otplib": "^12.0.1",
+    "pdfkit": "^0.15.2",
+    "pg": "^8.11.5",
+    "prom-client": "^15.1.3",
+    "qrcode": "^1.5.4",
+    "redis": "^4.7.0",
+    "socket.io": "^4.7.5",
+    "winston": "^3.13.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "jest-junit": "^17.0.0",
+    "nodemon": "^3.0.2",
+    "socket.io-client": "^4.7.5",
+    "supertest": "^6.3.4"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ],
+    "setupFiles": [
+      "<rootDir>/tests/setup/testEnv.js"
+    ],
+    "testTimeout": 15000,
+    "collectCoverageFrom": [
+      "models/**/*.js",
+      "routes/**/*.js",
+      "middleware/**/*.js",
+      "schemas/**/*.js",
+      "services/**/*.js",
+      "realtime/**/*.js",
+      "!**/node_modules/**"
+    ],
+    "coverageReporters": [
+      "text-summary",
+      "json-summary",
+      "lcov"
+    ],
+    "coverageThreshold": {
+      "global": {
+        "lines": 90,
+        "branches": 70,
+        "functions": 88,
+        "statements": 88
+      },
+      "./middleware/auth.js": {
+        "lines": 98,
+        "branches": 95,
+        "functions": 100,
+        "statements": 98
+      },
+      "./middleware/apiKeyAuth.js": {
+        "lines": 95,
+        "branches": 85,
+        "functions": 75,
+        "statements": 90
+      },
+      "./models/fraudEngine.js": {
+        "lines": 97,
+        "branches": 86,
+        "functions": 95,
+        "statements": 97
+      },
+      "./models/mlClient.js": {
+        "lines": 97,
+        "branches": 88,
+        "functions": 95,
+        "statements": 96
+      },
+      "./models/riskPolicy.js": {
+        "lines": 95,
+        "branches": 88,
+        "functions": 95,
+        "statements": 95
+      },
+      "./routes/auth.js": {
+        "lines": 95,
+        "branches": 84,
+        "functions": 95,
+        "statements": 94
+      },
+      "./routes/transactions.js": {
+        "lines": 92,
+        "branches": 75,
+        "functions": 85,
+        "statements": 90
+      },
+      "./routes/alerts.js": {
+        "lines": 90,
+        "branches": 77,
+        "functions": 90,
+        "statements": 87
+      },
+      "./services/transactionPipeline.js": {
+        "lines": 97,
+        "branches": 80,
+        "functions": 95,
+        "statements": 97
+      },
+      "./services/relationshipService.js": {
+        "lines": 97,
+        "branches": 85,
+        "functions": 93,
+        "statements": 94
+      },
+      "./services/modelPerformanceService.js": {
+        "lines": 93,
+        "branches": 70,
+        "functions": 95,
+        "statements": 92
+      },
+      "./routes/investigations.js": {
+        "lines": 92,
+        "branches": 80,
+        "functions": 92,
+        "statements": 89
+      },
+      "./models/investigationRepository.js": {
+        "lines": 88,
+        "branches": 60,
+        "functions": 92,
+        "statements": 80
+      },
+      "./models/ruleProposalRepository.js": {
+        "lines": 80,
+        "branches": 58,
+        "functions": 90,
+        "statements": 72
+      },
+      "./services/ruleSimulationService.js": {
+        "lines": 94,
+        "branches": 68,
+        "functions": 92,
+        "statements": 86
+      },
+      "./routes/ruleProposals.js": {
+        "lines": 90,
+        "branches": 70,
+        "functions": 88,
+        "statements": 88
+      },
+      "./services/verificationService.js": {
+        "lines": 90,
+        "branches": 63,
+        "functions": 88,
+        "statements": 87
+      },
+      "./models/verificationPolicy.js": {
+        "lines": 97,
+        "branches": 85,
+        "functions": 97,
+        "statements": 90
+      },
+      "./models/geoVelocity.js": {
+        "lines": 94,
+        "branches": 85,
+        "functions": 95,
+        "statements": 94
+      },
+      "./services/customerProfileService.js": {
+        "lines": 90,
+        "branches": 75,
+        "functions": 92,
+        "statements": 92
+      },
+      "./models/labelFeedbackRepository.js": {
+        "lines": 90,
+        "branches": 65,
+        "functions": 95,
+        "statements": 92
+      },
+      "./services/retrainingService.js": {
+        "lines": 80,
+        "branches": 63,
+        "functions": 80,
+        "statements": 85
+      },
+      "./routes/feedback.js": {
+        "lines": 88,
+        "branches": 62,
+        "functions": 84,
+        "statements": 92
+      },
+      "./routes/customerProfiles.js": {
+        "lines": 95,
+        "branches": 90,
+        "functions": 95,
+        "statements": 95
+      },
+      "./routes/verification.js": {
+        "lines": 97,
+        "branches": 95,
+        "functions": 97,
+        "statements": 97
+      },
+      "./services/driftMonitorService.js": {
+        "lines": 88,
+        "branches": 72,
+        "functions": 78,
+        "statements": 82
+      },
+      "./services/inferenceLog.js": {
+        "lines": 92,
+        "branches": 82,
+        "functions": 95,
+        "statements": 88
+      },
+      "./routes/modelMonitoring.js": {
+        "lines": 90,
+        "branches": 85,
+        "functions": 82,
+        "statements": 88
+      }
+    },
+    "reporters": [
+      "default",
+      [
+        "jest-junit",
+        {
+          "outputDirectory": "test-results",
+          "outputName": "junit.xml"
+        }
+      ]
+    ]
+  }
+}

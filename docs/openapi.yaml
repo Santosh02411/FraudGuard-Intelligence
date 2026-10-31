@@ -1,0 +1,3890 @@
+openapi: 3.0.3
+info:
+  title: FraudGuard API
+  version: "1.0.0"
+  description: |
+    REST API for FraudGuard — a hybrid rules + ML transaction fraud-detection
+    system. Every `POST /transactions` call runs the submitted transaction
+    through the real hybrid engine (hard rules → ML model → rule-engine
+    fallback) and returns a `risk_level`, `fraud_score`, human-readable
+    `fraud_reasons`, and — when the ML model scored it — a SHAP-based
+    `shap_explanation` showing which features drove the score.
+
+    See `docs/METHODOLOGY.md` for how detection works and the trade-offs
+    behind it, and the main `README.md` for an architecture diagram and
+    setup instructions.
+
+    **Versioning:** all routes are served under `/api/v1`. The unversioned
+    `/api/*` paths shown here also work today (mounted as an alias to the
+    same v1 routes) but new integrations should target `/api/v1` — see
+    the `servers` list below.
+  contact:
+    name: FraudGuard
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: http://localhost:5000/api/v1
+    description: Local development (versioned — preferred)
+  - url: http://localhost:5000/api
+    description: Local development (unversioned alias)
+
+tags:
+  - name: Cognee memory
+    description: Optional AI Memory / Fraud Intelligence (admin only) - historical search, entity graph, sync, investigation assistant
+  - name: Auth
+    description: Registration, login, token refresh/rotation, logout
+  - name: Transactions
+    description: Submit and list transactions; the core fraud-scoring endpoint
+  - name: Alerts
+    description: View and resolve medium/high-risk transaction alerts
+  - name: Admin
+    description: User management, system stats, the live-feed simulation, and the audit trail (admin role required)
+  - name: API Keys
+    description: Self-service service-to-service credentials for the Transactions endpoints
+  - name: Webhooks
+    description: Self-service outbound webhook registration and delivery logs
+  - name: Disputes
+    description: |
+      Chargeback/dispute case tracking (feature: case management /
+      compliance). Distinct from an alert's `verdict` — a dispute
+      tracks what actually happened financially with the card network
+      once a charge was formally contested, which can diverge from
+      FraudGuard's own fraud call. See `models/disputeRepository.js`.
+  - name: System
+    description: Health check
+
+security:
+  - bearerAuth: []
+
+paths:
+  /customer-profiles:
+    get: { summary: Ranked, explainable customer risk profiles (admin; analyst aid only), responses: { "200": { description: OK } } }
+  /customer-profiles/{id}:
+    get: { summary: One account's profile with per-component evidence (audited), responses: { "200": { description: OK }, "404": { description: Not found } } }
+  /feedback/labels:
+    get: { summary: List feedback labels, responses: { "200": { description: OK } } }
+    post: { summary: Propose a fraud/legitimate label, responses: { "201": { description: Created }, "409": { description: ALREADY_LABELLED }, "422": { description: SYNTHETIC } } }
+  /feedback/labels/import-outcomes:
+    post: { summary: Propose labels from existing analyst verdicts (still need verification), responses: { "200": { description: OK } } }
+  /feedback/labels/{id}/verify:
+    post: { summary: Verify a label (a different investigator), responses: { "200": { description: OK }, "409": { description: SELF_VERIFICATION or NOT_PENDING } } }
+  /feedback/labels/{id}/reject:
+    post: { summary: Reject a proposed label, responses: { "200": { description: OK } } }
+  /feedback/labels/{id}/withdraw:
+    post: { summary: Withdraw a proposed or verified label, responses: { "200": { description: OK } } }
+  /feedback/retraining/readiness:
+    get: { summary: Verified label counts and what is missing, responses: { "200": { description: OK } } }
+  /feedback/retraining/datasets:
+    get: { summary: Frozen datasets, responses: { "200": { description: OK } } }
+    post: { summary: Build an immutable hashed dataset from verified labels, responses: { "201": { description: Created }, "422": { description: NOT_ENOUGH_LABELS or DATASET_TOO_SMALL } } }
+  /feedback/retraining/datasets/{id}/download:
+    get: { summary: Download the dataset CSV (audited; X-Content-SHA256 header), responses: { "200": { description: CSV } } }
+  /feedback/retraining/runs:
+    get: { summary: Retraining runs, responses: { "200": { description: OK } } }
+    post: { summary: Request a run (one open run at a time), responses: { "201": { description: Created }, "409": { description: RUN_IN_PROGRESS } } }
+  /feedback/retraining/runs/{id}:
+    get: { summary: Run status (refreshes from the ML service); candidate_ready is NOT serving, responses: { "200": { description: OK } } }
+  /feedback/retraining/runs/{id}/approve:
+    post: { summary: Approve a run (a different administrator), responses: { "200": { description: OK }, "409": { description: SELF_APPROVAL } } }
+  /feedback/retraining/runs/{id}/reject:
+    post: { summary: Reject a pending run, responses: { "200": { description: OK } } }
+  /feedback/retraining/runs/{id}/cancel:
+    post: { summary: Cancel a pending or approved run, responses: { "200": { description: OK } } }
+  /feedback/retraining/runs/{id}/start:
+    post: { summary: Start an approved run; trains a candidate only, responses: { "202": { description: Accepted } } }
+  /rule-proposals:
+    get: { summary: List rule/policy proposals (admin), responses: { "200": { description: OK } } }
+    post: { summary: Create a draft proposal, responses: { "201": { description: Created } } }
+  /rule-proposals/{id}/simulate:
+    post: { summary: Replay history through current vs proposed rules, responses: { "200": { description: Simulation report } } }
+  /rule-proposals/{id}/approve:
+    post: { summary: Approve (needs fresh simulation and a second admin), responses: { "200": { description: OK }, "409": { description: STALE_SIMULATION or SELF_APPROVAL } } }
+  /rule-proposals/{id}/reject:
+    post: { summary: Reject, responses: { "200": { description: OK } } }
+  /rule-proposals/{id}/activate:
+    post: { summary: Apply atomically, responses: { "200": { description: OK }, "409": { description: STALE_BASE } } }
+  /rule-proposals/{id}/rollback:
+    post: { summary: Roll back an active proposal, responses: { "200": { description: OK }, "409": { description: ROLLBACK_CONFLICT } } }
+  /verification/policy:
+    get: { summary: Active verification policy, responses: { "200": { description: OK } } }
+    put: { summary: Set policy (enforce needs confirm_enforce), responses: { "200": { description: OK } } }
+  /verification/policy/preview:
+    post: { summary: Preview a policy against recent traffic, responses: { "200": { description: OK } } }
+  /verification/effectiveness:
+    get: { summary: Challenge outcomes, friction and loss measures (observational), responses: { "200": { description: OK } } }
+  /verification/challenges:
+    get: { summary: Recent challenges, responses: { "200": { description: OK } } }
+  /verification/sweep:
+    post: { summary: Expire overdue challenges now, responses: { "200": { description: OK } } }
+  /model-monitoring/overview:
+    get: { summary: Health overview, responses: { "200": { description: OK } } }
+  /model-monitoring/operations:
+    get: { summary: Latency, failures, fallback and missing-feature rates, responses: { "200": { description: OK } } }
+  /model-monitoring/snapshots:
+    get: { summary: Persisted drift/quality snapshots, responses: { "200": { description: OK } } }
+  /model-monitoring/segments:
+    get: { summary: Drift by segment, responses: { "200": { description: OK } } }
+  /model-monitoring/alerts:
+    get: { summary: Open monitoring alerts, responses: { "200": { description: OK } } }
+  /model-monitoring/alerts/{id}/acknowledge:
+    post: { summary: Acknowledge an alert, responses: { "200": { description: OK } } }
+  /model-monitoring/run:
+    post: { summary: Run the monitor now, responses: { "200": { description: OK } } }
+  /model-monitoring/settings:
+    get: { summary: Thresholds, responses: { "200": { description: OK } } }
+    put: { summary: Update thresholds, responses: { "200": { description: OK } } }
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      description: No authentication required. Reports which API version is running.
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  env: { type: string, example: development }
+                  api_version: { type: string, example: v1 }
+                  time: { type: string, format: date-time }
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Create a new user account
+      description: |
+        Password must be at least 8 characters and include an uppercase
+        letter, a lowercase letter, a number, and a symbol — every failing
+        rule is reported at once, not just the first.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+            example:
+              username: jane_doe
+              email: jane@example.com
+              password: "Str0ng!Pass"
+      responses:
+        "201":
+          description: Account created; returns a token pair immediately (no separate login needed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPairResponse"
+        "400":
+          description: Validation failed (e.g. weak password)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "409":
+          description: Username or email already taken
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in
+      description: |
+        Returns an access token (short-lived JWT, default 15m) and a
+        refresh token (long-lived, rotating) — unless the account has
+        TOTP 2FA enabled, in which case a correct password returns
+        `{ mfaRequired: true, mfaToken }` instead, and the caller must
+        complete `POST /auth/login/mfa` to actually get a session. After
+        5 consecutive failed password attempts the account is locked for
+        15 minutes and this returns `423 Locked` for both correct and
+        incorrect passwords, so a locked-out caller learns nothing new
+        about which one was wrong.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              username: admin
+              password: admin123
+      responses:
+        "200":
+          description: Login successful, or an MFA challenge if the account has 2FA enabled
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/TokenPairResponse"
+                  - $ref: "#/components/schemas/MfaChallengeResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "423":
+          description: Account temporarily locked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /auth/login/mfa:
+    post:
+      tags: [Auth]
+      summary: Complete login with a TOTP or backup code
+      description: |
+        Completes the two-step login flow started by `POST /auth/login`
+        when an account has 2FA enabled. `code` may be a 6-digit TOTP
+        code from an authenticator app, or one of the account's
+        single-use backup codes (consumed on success — see
+        `POST /auth/mfa/enable`). `mfaToken` is short-lived (default 5m)
+        and single-purpose — it cannot be used as a real access token.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MfaLoginRequest"
+      responses:
+        "200":
+          description: Login completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPairResponse"
+        "401":
+          description: Invalid/expired MFA challenge token, or invalid code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange a refresh token for a new token pair
+      description: |
+        Rotates on every use — the presented refresh token is revoked and
+        a new one issued. Presenting an already-used (revoked) refresh
+        token is treated as a possible theft/replay: every active refresh
+        token for that account is revoked, not just the reused one.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        "200":
+          description: New token pair issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPairResponse"
+        "401":
+          description: Invalid, expired, or reused (revoked) refresh token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke a refresh token server-side
+      description: Idempotent and always returns 200 — never reveals whether the token it was given was valid.
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string }
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Logged out }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the current authenticated user
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    delete:
+      tags: [Auth]
+      summary: Delete (anonymize) your own account
+      description: |
+        Requires the current password. **Anonymizes rather than
+        hard-deletes**: username/email/password are scrambled to an
+        unguessable placeholder (freeing the originals for a future
+        registration), every refresh token/API key/webhook tied to the
+        account is revoked, and the account is excluded from every
+        future lookup — including one made with an access token issued
+        seconds before this call, which stops working on its very next
+        request. Transactions and alerts are deliberately retained
+        (not deleted or reassigned), since the app's own dynamic fraud
+        blacklist and audit trail depend on that history surviving
+        account closure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        "200":
+          description: Account deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        "401":
+          description: Password is incorrect (or not authenticated)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Request a password reset email
+      description: |
+        Always returns the same generic message whether or not the
+        email belongs to an account, so this endpoint can't be used to
+        enumerate registered users. Only actually sends an email
+        (`services/emailService.js`) when the account exists.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200":
+          description: Generic confirmation message (sent regardless of whether the account exists)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: "If an account with that email exists, a password reset link has been sent." }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Complete a password reset
+      description: |
+        `token` is the raw (unhashed) value from the emailed reset
+        link — only its SHA-256 hash is ever stored server-side.
+        Revokes every refresh token for the account on success, the
+        same reasoning as `PATCH /auth/password` below: resetting a
+        password means someone just regained control of the account,
+        so every other session (including a possible attacker's) should
+        have to re-authenticate.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password:
+                  type: string
+                  minLength: 8
+                  description: Must include an uppercase letter, a lowercase letter, a number, and a symbol.
+      responses:
+        "200":
+          description: Password reset
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: "Password reset successfully. Please log in with your new password." }
+        "400":
+          description: Invalid/expired token, or weak password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /auth/verify-email:
+    post:
+      tags: [Auth]
+      summary: Verify an email address
+      description: |
+        Public — the token itself (from the emailed verification link)
+        is the credential, so no `Authorization` header is required.
+        Verification is **not** required to use the app; this just
+        marks `email_verified: true`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200":
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Email verified successfully. }
+        "400":
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /auth/resend-verification:
+    post:
+      tags: [Auth]
+      summary: Resend the email verification link
+      description: Requires being logged in — avoids the enumeration/spam surface of accepting an arbitrary email address in the request body.
+      responses:
+        "200":
+          description: A fresh verification email was sent (or a no-op message if already verified)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /auth/password:
+    patch:
+      tags: [Auth]
+      summary: Change your own password
+      description: |
+        Requires the current password — an active access token alone
+        isn't sufficient to change a credential, the same reasoning as
+        `POST /auth/mfa/disable` below. Revokes every other refresh
+        token and re-issues a fresh pair for *this* session (so you
+        aren't logged out by your own change).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword:
+                  type: string
+                  minLength: 8
+                  description: Must include an uppercase letter, a lowercase letter, a number, and a symbol.
+      responses:
+        "200":
+          description: Password changed — a fresh token pair for this session
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      message: { type: string, example: Password changed successfully. }
+                  - $ref: "#/components/schemas/TokenPairResponse"
+        "400":
+          description: Weak new password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          description: Current password is incorrect (or not authenticated)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/email:
+    patch:
+      tags: [Auth]
+      summary: Change your own email address
+      description: |
+        Requires the current password. Resets `email_verified` back to
+        `false` and sends a fresh verification email to the new
+        address — an email change has to be re-proven the same as at
+        registration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newEmail, currentPassword]
+              properties:
+                newEmail: { type: string, format: email }
+                currentPassword: { type: string }
+      responses:
+        "200":
+          description: Email updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          description: Current password is incorrect (or not authenticated)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email already in use by another account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/mfa/setup:
+    post:
+      tags: [Auth]
+      summary: Start TOTP 2FA setup
+      description: |
+        Generates a new secret and stores it as *pending* — 2FA isn't
+        actually required at login until `POST /auth/mfa/enable`
+        confirms it with a valid code. Returns the secret in plaintext
+        exactly once (for manual entry as a fallback) plus a QR code
+        for the frontend to render.
+      responses:
+        "200":
+          description: Secret + QR code for enrollment
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string, example: JBSWY3DPEHPK3PXP }
+                  otpauthUrl: { type: string, example: "otpauth://totp/FraudGuard:admin?secret=JBSWY3DPEHPK3PXP&issuer=FraudGuard" }
+                  qrCodeDataUrl: { type: string, description: "base64 PNG data URL", example: "data:image/png;base64,..." }
+        "400":
+          description: 2FA is already enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/mfa/enable:
+    post:
+      tags: [Auth]
+      summary: Confirm 2FA setup and turn it on
+      description: |
+        Requires one valid 6-digit code from the authenticator app —
+        proves the secret from `POST /auth/mfa/setup` was actually
+        scanned/entered correctly before 2FA becomes mandatory at
+        login. Returns 8 single-use backup codes in plaintext exactly
+        once (only bcrypt hashes are persisted). Revokes every refresh
+        token for the account (forcing every other session to
+        re-authenticate with MFA now required) and immediately
+        re-issues a fresh pair for *this* session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, pattern: "^\\d{6}$", example: "123456" }
+      responses:
+        "200":
+          description: 2FA enabled — backup codes + a fresh token pair for this session
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      message: { type: string }
+                      backupCodes:
+                        type: array
+                        items: { type: string }
+                        example: ["a1b2-c3d4e5", "f6a7-b8c9d0"]
+                      warning: { type: string }
+                  - $ref: "#/components/schemas/TokenPairResponse"
+        "400":
+          description: Invalid code, already enabled, or setup not started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/mfa/disable:
+    post:
+      tags: [Auth]
+      summary: Disable 2FA
+      description: Requires the current password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        "200":
+          description: 2FA disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        "400":
+          description: 2FA is not enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Password is incorrect (or not authenticated)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/me/export:
+    get:
+      tags: [Auth]
+      summary: Download a JSON bundle of everything held about your account
+      description: |
+        Profile, transactions, alerts, your own audit-trail entries, and
+        API key/webhook metadata (never secrets or hashes) — each
+        section capped at 10,000 rows so one request can't pull an
+        unbounded amount of data.
+      responses:
+        "200":
+          description: Data export bundle
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exported_at: { type: string, format: date-time }
+                  profile:
+                    $ref: "#/components/schemas/User"
+                  transactions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Transaction"
+                  alerts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Alert"
+                  audit_log_entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditLogEntry"
+                  api_keys:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApiKey"
+                  webhooks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Webhook"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /transactions:
+    get:
+      tags: [Transactions]
+      summary: List/search transactions (paginated, filterable)
+      description: |
+        Regular users see only their own transactions; admins see every
+        user's. All filter params are optional and combinable — this is
+        the "ops tool" search behind the Transactions history page.
+        Accepts either a JWT bearer token or an API key
+        (`X-API-Key` — see "API Keys" below); a key needs the
+        `transactions:read` scope.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - name: merchant
+          in: query
+          description: Case-insensitive partial match.
+          schema: { type: string }
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [grocery, food, electronics, travel, entertainment, utilities, clothing, health, crypto, gambling, wire_transfer]
+        - name: riskLevel
+          in: query
+          schema: { type: string, enum: [low, medium, high] }
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date-time }
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date-time }
+        - name: amountMin
+          in: query
+          schema: { type: number }
+        - name: amountMax
+          in: query
+          schema: { type: number }
+      responses:
+        "200":
+          description: A page of transactions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Transaction"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+        "400":
+          description: Invalid filter value (e.g. unrecognized category)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: API key is missing the transactions:read scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [Transactions]
+      summary: Submit a transaction and score it for fraud
+      description: |
+        Runs the transaction through the hybrid fraud engine
+        (`analyzeTransactionHybrid`): hard rules first (can force
+        `risk_level: "high"` regardless of the model), then the ML
+        service (with SHAP explanation), falling back to the deterministic
+        rule engine only if the ML service is unreachable. If the result
+        is medium or high risk, an alert is created automatically
+        (pushed over WebSocket as `alert:new`) and any of the caller's
+        active webhooks subscribed to `transaction.flagged` are fired
+        (fire-and-forget — see "Webhooks" below).
+
+        Feature: step-up authentication. If the result is medium risk
+        AND the caller has a webhook subscribed to
+        `transaction.step_up_required` (or `*`), the transaction is
+        held (`status: "pending_step_up"`) instead of completing, and
+        the response's `step_up` field carries a challenge to resolve
+        via `POST /transactions/{id}/step-up/verify`.
+
+        Accepts either a JWT bearer token or an API key (`X-API-Key` —
+        see "API Keys" below); a key needs the `transactions:write`
+        scope. Also accepts an optional `Idempotency-Key` header so a
+        network retry can't double-submit — see "Idempotency" below.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: |
+            Opt-in. Same key + same request body within the TTL
+            (`IDEMPOTENCY_KEY_TTL_HOURS`, default 24h) replays the
+            original response instead of reprocessing (the response
+            carries an `Idempotent-Replay: true` header on replay);
+            same key + a different body returns 409.
+          schema: { type: string, minLength: 1, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTransactionRequest"
+            example:
+              amount: 2450.00
+              merchant: CryptoExchange Pro
+              category: crypto
+              location: "Unknown"
+              card_type: prepaid
+      responses:
+        "201":
+          description: Transaction created and scored (or replayed from a prior identical request — see the Idempotency-Key header)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionAnalysisResponse"
+        "400":
+          description: Validation failed (e.g. bad amount, unrecognized category/location, malformed Idempotency-Key)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: API key is missing the transactions:write scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Idempotency-Key was already used with a different request body, or a request with it is still in flight
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /transactions/stats:
+    get:
+      tags: [Transactions]
+      summary: Dashboard statistics
+      description: Regular users get their own stats; admins get system-wide stats.
+      responses:
+        "200":
+          description: Aggregate stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionStats"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /transactions/bulk:
+    post:
+      tags: [Transactions]
+      summary: Score a batch of transactions in one request
+      description: |
+        Feature: bulk transaction import/batch scoring. Each row runs
+        through the exact same pipeline as `POST /transactions` above —
+        the same alerts, webhooks, live feed, and step-up eligibility —
+        so a batch-imported transaction is never a second-class citizen
+        next to one entered one at a time. Capped at 50 rows per
+        request. A malformed row fails the whole request before
+        anything is created (standard validation error); a row that
+        throws *during* scoring (rare) is reported per-row instead of
+        failing the rest of the batch. Always audit-logged as
+        `transactions.bulk_create`, regardless of auth method — unlike
+        the single-transaction endpoint, which only audits API-key
+        callers. No idempotency support (the key scheme is built around
+        a single transaction body, not an array). See
+        `routes/transactions.js`'s `scoreAndCreateTransaction`, shared
+        with the single-transaction endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transactions]
+              properties:
+                transactions:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    $ref: "#/components/schemas/CreateTransactionRequest"
+      responses:
+        "201":
+          description: Every row was accepted for scoring (individual rows may still report a per-row error — check `results[].error`)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  summary:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      completed: { type: integer }
+                      flagged: { type: integer, description: "medium or high risk, and not held for step-up" }
+                      held_for_step_up: { type: integer }
+                      failed: { type: integer }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index: { type: integer, description: "0-based position in the submitted transactions array" }
+                        transaction:
+                          $ref: "#/components/schemas/Transaction"
+                        step_up:
+                          type: object
+                          nullable: true
+                        analysis:
+                          type: object
+                        error: { type: string, description: "Present instead of transaction/step_up/analysis if this row failed during scoring" }
+        "400":
+          description: Empty array, more than 50 rows, or a malformed row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /transactions/export:
+    get:
+      tags: [Transactions]
+      summary: CSV export
+      description: |
+        Same filters and role-based scoping as `GET /transactions`,
+        capped at 10,000 rows. Registered before `/{id}` so "export" is
+        never swallowed as an `:id` path parameter. Accepts either a
+        JWT bearer token or an API key with the `transactions:read`
+        scope, same as the list endpoint.
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      parameters:
+        - name: merchant
+          in: query
+          schema: { type: string }
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [grocery, food, electronics, travel, entertainment, utilities, clothing, health, crypto, gambling, wire_transfer]
+        - name: riskLevel
+          in: query
+          schema: { type: string, enum: [low, medium, high] }
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date-time }
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date-time }
+        - name: amountMin
+          in: query
+          schema: { type: number }
+        - name: amountMax
+          in: query
+          schema: { type: number }
+      responses:
+        "200":
+          description: CSV file
+          content:
+            text/csv:
+              schema: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: API key is missing the transactions:read scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /transactions/{id}:
+    get:
+      tags: [Transactions]
+      summary: View a single transaction's full record
+      description: |
+        Includes the full `shap_explanation` and `fraud_reasons` — this
+        is what the frontend's transaction detail page and the Alerts/
+        Transactions list link into, so a transaction's explanation stays
+        reachable after the moment it was created (not just in the
+        Simulator's result panel). Audit-logged (`transactions.view`).
+        Only the transaction's owner or an admin may view it.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: The transaction
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transaction:
+                    $ref: "#/components/schemas/Transaction"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /transactions/{id}/step-up:
+    get:
+      tags: [Transactions]
+      summary: Poll a transaction's step-up challenge status
+      description: |
+        Feature: step-up authentication. A medium-risk transaction is
+        only ever held for step-up when the account has a webhook
+        subscribed to `transaction.step_up_required` (or `*`) — see
+        `POST /transactions` below and `models/stepUpRepository.js`.
+        404s if this transaction was never held for one. Only the
+        transaction's owner or an admin may poll it.
+
+        While the challenge is still `pending`, the response includes
+        `challenge.challenge_token` — the same authorization boundary
+        that gates this endpoint (owner or admin) already gates
+        `POST .../step-up/verify`, so this is how a flow abandoned
+        before it was resolved (e.g. the browser tab was closed) can
+        still be recovered and completed later, rather than being
+        stuck in `pending_step_up` forever. Once resolved, the token
+        is omitted.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: The challenge's current status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transaction_status: { type: string, enum: [pending_step_up, completed, blocked] }
+                  challenge:
+                    type: object
+                    properties:
+                      status: { type: string, enum: [pending, verified, failed] }
+                      method: { type: string, example: otp }
+                      expires_at: { type: string, format: date-time }
+                      verified_at: { type: string, format: date-time, nullable: true }
+                      challenge_token: { type: string, description: "Only present while status is pending — see above" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /transactions/{id}/step-up/verify:
+    post:
+      tags: [Transactions]
+      summary: Resolve a pending step-up challenge
+      description: |
+        FraudGuard never runs the actual OTP/3DS flow itself — this
+        endpoint is where the merchant's own verification flow reports
+        back its outcome. `outcome: "success"` completes the
+        transaction; `"failure"` blocks it. A resolved challenge cannot
+        be verified again. Only the transaction's owner or an admin may
+        call this.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge_token, outcome]
+              properties:
+                challenge_token: { type: string }
+                outcome: { type: string, enum: [success, failure] }
+      responses:
+        "200":
+          description: The challenge was resolved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Step-up verification recorded }
+                  step_up_outcome: { type: string, enum: [success, failure] }
+                  transaction:
+                    $ref: "#/components/schemas/Transaction"
+        "400":
+          description: Invalid outcome value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No such transaction, or the challenge_token doesn't match its pending challenge
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: This challenge was already resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /alerts:
+    get:
+      tags: [Alerts]
+      summary: List/search alerts (paginated, filterable)
+      description: |
+        Regular users see only their own alerts; admins see every user's.
+        All filter params are optional and combinable — this is the
+        case-management filter bar behind the Alerts page.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, in_review, resolved] }
+        - name: riskLevel
+          in: query
+          schema: { type: string, enum: [medium, high] }
+        - name: merchant
+          in: query
+          description: Case-insensitive partial match on the underlying transaction's merchant.
+          schema: { type: string }
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date-time }
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date-time }
+        - name: amountMin
+          in: query
+          schema: { type: number }
+        - name: amountMax
+          in: query
+          schema: { type: number }
+        - name: assignedTo
+          in: query
+          description: Filter to alerts assigned to a specific user id.
+          schema: { type: integer }
+      responses:
+        "200":
+          description: A page of alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Alert"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+        "400":
+          description: Invalid filter value (e.g. unrecognized status)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /alerts/export:
+    get:
+      tags: [Alerts]
+      summary: CSV export
+      description: |
+        Same filters and role-based scoping as `GET /alerts`, capped at
+        10,000 rows. Registered before `/{id}` so "export" is never
+        swallowed as an `:id` path parameter.
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, in_review, resolved] }
+        - name: riskLevel
+          in: query
+          schema: { type: string, enum: [medium, high] }
+        - name: merchant
+          in: query
+          schema: { type: string }
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date-time }
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date-time }
+        - name: amountMin
+          in: query
+          schema: { type: number }
+        - name: amountMax
+          in: query
+          schema: { type: number }
+      responses:
+        "200":
+          description: CSV file
+          content:
+            text/csv:
+              schema: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /alerts/bulk-resolve:
+    patch:
+      tags: [Alerts]
+      summary: Resolve up to 100 alerts in one request
+      description: |
+        Same verdict/note semantics as `PATCH /alerts/{id}/resolve`,
+        applied to a batch. All-or-nothing: if any id in `alertIds` is
+        missing or not owned by the caller (non-admins only), the whole
+        batch is rejected and nothing is touched — a bulk action
+        silently succeeding for only some of the requested alerts would
+        be a worse failure mode than requiring a retry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [alertIds, verdict]
+              properties:
+                alertIds:
+                  type: array
+                  items: { type: integer, minimum: 1 }
+                  minItems: 1
+                  maxItems: 100
+                verdict:
+                  type: string
+                  enum: [confirmed_fraud, false_positive]
+                note:
+                  type: string
+                  maxLength: 1000
+      responses:
+        "200":
+          description: All alerts in the batch resolved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: "3 alert(s) resolved" }
+                  resolvedCount: { type: integer }
+                  alertIds:
+                    type: array
+                    items: { type: integer }
+        "400":
+          description: Invalid body (empty/oversized alertIds, missing verdict)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: One or more alerts in the batch belong to another user (non-admin caller)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: One or more alertIds do not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /alerts/{id}:
+    get:
+      tags: [Alerts]
+      summary: View a single alert
+      description: Audit-logged (`alerts.view`). Only the alert's owner or an admin may view it.
+      parameters:
+        - $ref: "#/components/parameters/AlertId"
+      responses:
+        "200":
+          description: The alert
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alert:
+                    $ref: "#/components/schemas/Alert"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /alerts/{id}/explanation:
+    get:
+      tags: [Alerts]
+      summary: Get a plain-language explanation of why this alert fired
+      description: |
+        Feature: LLM-generated plain-language explanations. One sentence,
+        generated on first request and cached on the alert row (repeat
+        requests return the cached copy, indicated by `cached: true`) —
+        see `services/explanationService.js`. Falls back to a
+        template-based sentence built from the transaction's own
+        `fraud_reasons` when no LLM API key is configured, so this
+        endpoint always returns something. Only the alert's owner or an
+        admin may request it.
+      parameters:
+        - $ref: "#/components/parameters/AlertId"
+      responses:
+        "200":
+          description: Explanation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  explanation: { type: string, example: This was flagged mainly for its unusually large amount and a mismatched shipping location. }
+                  cached: { type: boolean, description: "true if this was already generated for this alert and served from the cached copy" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /health/ready:
+    get:
+      tags: [System]
+      summary: Readiness probe
+      description: 200 when the database answers; 503 `not_ready` when it does not. ML status is reported but does not fail readiness.
+      security: []
+      responses:
+        "200": { description: Ready }
+        "503": { description: Database unavailable }
+
+  /alerts/metrics:
+    get:
+      tags: [Alerts]
+      summary: Team case metrics (admin)
+      responses: { "200": { description: Counts, false-positive rate, amounts, overdue } }
+
+  /alerts/{id}/case:
+    get:
+      tags: [Alerts]
+      summary: Full case view (admin)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Alert with claim, comments, evidence list } }
+
+  /alerts/{id}/claim:
+    post:
+      tags: [Alerts]
+      summary: Claim (lease) or heartbeat a case (admin)
+      description: Returns 409 `ALERT_LOCKED` if another investigator holds a live lease; `force` + `reason` takes over (audited).
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Claimed }, "409": { description: ALERT_LOCKED } }
+    delete:
+      tags: [Alerts]
+      summary: Release a claim (admin)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Released } }
+
+  /alerts/{id}/status:
+    patch:
+      tags: [Alerts]
+      summary: Set investigation status (admin)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Updated }, "409": { description: ALERT_LOCKED or VERSION_CONFLICT } }
+
+  /alerts/{id}/severity:
+    patch:
+      tags: [Alerts]
+      summary: Change severity with a reason; recomputes deadline (admin)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Updated } }
+
+  /alerts/{id}/escalate:
+    post:
+      tags: [Alerts]
+      summary: Manually escalate (admin)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Escalated } }
+
+  /alerts/{id}/comments:
+    get:
+      tags: [Alerts]
+      summary: List comments (admin)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Comments } }
+    post:
+      tags: [Alerts]
+      summary: Add an append-only comment (admin)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "201": { description: Created } }
+
+  /alerts/{id}/evidence:
+    get:
+      tags: [Alerts]
+      summary: List evidence (admin)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Evidence metadata } }
+    post:
+      tags: [Alerts]
+      summary: Upload evidence as a raw body (PNG/JPEG/PDF/text, content-sniffed) (admin)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "201": { description: Stored }, "413": { description: Too large }, "415": { description: Type not allowed } }
+
+  /alerts/{id}/evidence/{evidenceId}:
+    get:
+      tags: [Alerts]
+      summary: Download evidence (attachment, sha256-verified) (admin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: evidenceId, in: path, required: true, schema: { type: integer } }
+      responses: { "200": { description: File }, "500": { description: Integrity check failed } }
+
+  /alerts/{id}/outcome:
+    patch:
+      tags: [Alerts]
+      summary: Record loss/recovered/prevented amounts on confirmed fraud (admin)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Updated } }
+
+  /admin/model-performance:
+    get:
+      tags: [Admin]
+      summary: Model performance against confirmed outcomes (admin)
+      description: Precision, recall and false-positive-rate estimates, PR-AUC, weekly series, breakdowns, model-version comparison and review backlog. See docs/OUTCOMES_CASES_RELATIONSHIPS.md for label definitions and limits.
+      parameters:
+        - { name: days, in: query, schema: { type: integer, minimum: 7, maximum: 365, default: 90 } }
+        - { name: maturity_days, in: query, schema: { type: integer, minimum: 1, maximum: 180, default: 30 } }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv], default: json } }
+      responses: { "200": { description: Report (JSON or CSV) } }
+
+  /investigations:
+    get:
+      tags: [Cases]
+      summary: List cases (admin)
+      responses: { "200": { description: Page of cases } }
+    post:
+      tags: [Cases]
+      summary: Create a case from alerts and/or transactions (admin)
+      description: 409 `ITEM_IN_OTHER_CASE` if an item already belongs to another case.
+      responses: { "201": { description: Created }, "409": { description: Item already in another case } }
+
+  /investigations/by-item:
+    get:
+      tags: [Cases]
+      summary: Which case holds this alert or transaction
+      responses: { "200": { description: "{ case_id }" } }
+
+  /investigations/{id}:
+    get:
+      tags: [Cases]
+      summary: Case with contents, links and summary
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Case detail } }
+    patch:
+      tags: [Cases]
+      summary: Update title, summary or priority (optimistic `version`)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Updated }, "409": { description: VERSION_CONFLICT } }
+
+  /investigations/{id}/timeline:
+    get:
+      tags: [Cases]
+      summary: Chronological case, alert, dispute and transaction timeline
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Timeline } }
+
+  /investigations/{id}/suggestions:
+    get:
+      tags: [Cases]
+      summary: Unassigned alerts sharing an account, device or IP (leads only)
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Suggestions } }
+
+  /investigations/{id}/items:
+    post:
+      tags: [Cases]
+      summary: Add alerts/transactions
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Added }, "409": { description: ITEM_IN_OTHER_CASE or case closed } }
+
+  /investigations/{id}/items/{type}/{itemId}:
+    delete:
+      tags: [Cases]
+      summary: Remove an alert (with its transaction) or an unpaired transaction
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: type, in: path, required: true, schema: { type: string, enum: [alert, transaction] } }
+        - { name: itemId, in: path, required: true, schema: { type: integer } }
+      responses: { "200": { description: Removed } }
+
+  /investigations/{id}/assign:
+    patch:
+      tags: [Cases]
+      summary: Assign to an investigator or unassign
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Updated } }
+
+  /investigations/{id}/status:
+    patch:
+      tags: [Cases]
+      summary: Change status; reopening a closed case requires a reason
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Updated }, "409": { description: BAD_TRANSITION or VERSION_CONFLICT } }
+
+  /investigations/{id}/comments:
+    post:
+      tags: [Cases]
+      summary: Add a note to the timeline
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "201": { description: Timeline } }
+
+  /investigations/{id}/close:
+    post:
+      tags: [Cases]
+      summary: Close with outcome confirmed_fraud / legitimate / inconclusive
+      description: With `resolve_alerts`, resolves open alerts with the matching verdict; alerts locked by another investigator are skipped and returned in `alerts_skipped`.
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer } }]
+      responses: { "200": { description: Closed } }
+
+  /relationships/clusters:
+    get:
+      tags: [Relationships]
+      summary: Strongly linked account clusters with itemised risk scores (admin)
+      responses: { "200": { description: Clusters } }
+
+  /relationships/clusters/{id}:
+    get:
+      tags: [Relationships]
+      summary: One cluster (ids like c42 are recomputed from live data)
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses: { "200": { description: Cluster }, "404": { description: Not found } }
+
+  /relationships/signals:
+    get:
+      tags: [Relationships]
+      summary: Accounts with repeated small transactions
+      responses: { "200": { description: Signals } }
+
+  /relationships/graph:
+    get:
+      tags: [Relationships]
+      summary: Expand from a transaction or account (1-2 hops); audited
+      parameters:
+        - { name: transactionId, in: query, schema: { type: integer } }
+        - { name: userId, in: query, schema: { type: integer } }
+        - { name: depth, in: query, schema: { type: integer, minimum: 1, maximum: 2, default: 1 } }
+      responses: { "200": { description: Nodes and edges }, "404": { description: Not found } }
+
+  /alerts/{id}/resolve:
+    patch:
+      tags: [Alerts]
+      summary: Resolve an alert with an analyst verdict
+      description: |
+        Audit-logged (`alerts.resolve`, recording the verdict and whether
+        a note was given). Only the alert's owner or an admin may resolve
+        it. `verdict` is required, not optional — this is what
+        `transactionRepository.fraudDeviceAndIpBlacklist` reads to decide
+        whether the transaction's device/IP belongs on the dynamic
+        blacklist: `confirmed_fraud` adds it regardless of the model's
+        original score, and `false_positive` explicitly removes it even
+        if the model originally flagged it, closing the analyst feedback
+        loop instead of leaving that decision purely model-driven.
+      parameters:
+        - $ref: "#/components/parameters/AlertId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolveAlertRequest"
+            example:
+              verdict: confirmed_fraud
+              note: Cardholder confirmed the card was reported stolen.
+      responses:
+        "200":
+          description: Alert resolved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Alert resolved }
+                  alert:
+                    $ref: "#/components/schemas/Alert"
+        "400":
+          description: Missing/invalid verdict, or note too long
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /alerts/{id}/assign:
+    patch:
+      tags: [Alerts]
+      summary: Assign or unassign an alert
+      description: |
+        Admin-only — only admins currently have visibility across every
+        user's alerts, so only admins can meaningfully triage/assign
+        them, and the assignee must themselves be an admin for the same
+        reason. Assigning auto-transitions `status` from `open` to
+        `in_review`; passing `assigneeId: null` unassigns and moves it
+        back to `open` (never touches an already-`resolved` alert).
+        Audit-logged (`alerts.assign`).
+      parameters:
+        - $ref: "#/components/parameters/AlertId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignAlertRequest"
+      responses:
+        "200":
+          description: Alert assigned or unassigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Alert assigned }
+                  alert:
+                    $ref: "#/components/schemas/Alert"
+        "400":
+          description: Assignee exists but isn't an admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Caller isn't an admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Alert or assignee not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: List all users with their stats
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: All users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserWithStats"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/users/{id}/role:
+    patch:
+      tags: [Admin]
+      summary: Promote or demote a user's role
+      description: |
+        Audit-logged (`admin.role_change`) and revokes every active refresh
+        token for the affected account, so a demoted admin can't keep
+        elevated access via a session opened before the demotion. An admin
+        cannot demote themselves.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [admin, user] }
+      responses:
+        "200":
+          description: Role updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: "User role updated to admin" }
+        "400":
+          description: Attempted to demote yourself
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/stats:
+    get:
+      tags: [Admin]
+      summary: System-wide stats
+      responses:
+        "200":
+          description: System stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_users: { type: integer }
+                  total_transactions: { type: integer }
+                  active_alerts: { type: integer }
+                  system_fraud_rate: { type: number, format: float }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/simulation/start:
+    post:
+      tags: [Admin]
+      summary: Start the live transaction feed simulation
+      description: |
+        Generates synthetic transactions on an interval, each scored by
+        the real fraud engine and broadcast to every connected client's
+        Live Feed view (`simulation:transaction`, `simulation:status`).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                intervalMs:
+                  type: integer
+                  minimum: 500
+                  maximum: 15000
+                  default: 2500
+                fraudRatio:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                  default: 0.2
+      responses:
+        "200":
+          description: Simulation started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  status:
+                    $ref: "#/components/schemas/SimulationStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Simulation already running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/simulation/stop:
+    post:
+      tags: [Admin]
+      summary: Stop the live transaction feed simulation
+      responses:
+        "200":
+          description: Simulation stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  status:
+                    $ref: "#/components/schemas/SimulationStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Simulation not running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/simulation/status:
+    get:
+      tags: [Admin]
+      summary: Current simulation run state
+      responses:
+        "200":
+          description: Current status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    $ref: "#/components/schemas/SimulationStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/audit-logs:
+    get:
+      tags: [Admin]
+      summary: Browse the audit trail
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/Limit"
+        - name: action
+          in: query
+          schema: { type: string }
+          example: auth.login
+        - name: targetType
+          in: query
+          schema: { type: string }
+          example: alert
+        - name: targetId
+          in: query
+          schema: { type: integer }
+        - name: userId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: A page of audit log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditLogEntry"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/audit-logs/export:
+    get:
+      tags: [Admin]
+      summary: CSV export of the audit trail
+      description: Same filters as GET /admin/audit-logs (minus page/limit), capped at 10,000 rows.
+      parameters:
+        - name: action
+          in: query
+          schema: { type: string }
+        - name: targetType
+          in: query
+          schema: { type: string }
+        - name: targetId
+          in: query
+          schema: { type: integer }
+        - name: userId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: CSV file
+          content:
+            text/csv:
+              schema: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/audit-logs/alert/{id}:
+    get:
+      tags: [Admin]
+      summary: Full view/resolve history for one alert
+      parameters:
+        - $ref: "#/components/parameters/AlertId"
+      responses:
+        "200":
+          description: Every audit entry targeting this alert
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditLogEntry"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/fraud-rules:
+    get:
+      tags: [Admin]
+      summary: List configurable fraud rules
+      description: |
+        Feature: admin rule builder. These are admin-editable blacklists
+        (merchant/location/device/IP) and a global amount cap — distinct
+        from the ML model, and evaluated first via `fraudEngine.js`'s
+        `checkHardRules` on every transaction (see
+        `models/fraudRuleRepository.js`). A handful of defaults are
+        seeded automatically the first time an admin account exists.
+      responses:
+        "200":
+          description: Every configured rule
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/FraudRule"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [Admin]
+      summary: Create a fraud rule
+      description: |
+        `blacklist_*` rule types take `value` (the exact string to
+        match); `amount_cap` takes `threshold` instead. Takes effect on
+        the very next transaction scored. Audit-logged
+        (`admin.fraud_rule.create`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFraudRuleRequest"
+            example:
+              rule_type: blacklist_ip
+              value: 198.51.100.7
+              reason: Known testing farm
+      responses:
+        "201":
+          description: Rule created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Rule created }
+                  rule:
+                    $ref: "#/components/schemas/FraudRule"
+        "400":
+          description: value provided for amount_cap, threshold provided for a blacklist type, or neither provided
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/fraud-rules/preview:
+    post:
+      tags: [Admin]
+      summary: Dry-run a candidate rule against transactions on file
+      description: |
+        Feature: rule impact preview. Same body shape as `POST
+        /admin/fraud-rules` above (rule_type plus value or threshold),
+        but nothing is created — this only counts and samples the
+        transactions already on file that the rule *would* match, so
+        an admin can catch an overly broad blacklist entry or amount
+        cap before it starts generating alerts. See
+        `models/fraudRuleRepository.js`'s `previewImpact`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFraudRuleRequest"
+            example:
+              rule_type: blacklist_merchant
+              value: Shady Imports LLC
+      responses:
+        "200":
+          description: Impact preview
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  matched_count: { type: integer, description: "Total transactions on file this rule would match" }
+                  sample:
+                    type: array
+                    maxItems: 5
+                    description: The 5 most recent matches
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        merchant: { type: string }
+                        amount: { type: number, format: float }
+                        location: { type: string }
+                        card_type: { type: string }
+                        risk_level: { type: string, enum: [low, medium, high] }
+                        created_at: { type: string, format: date-time }
+        "400":
+          description: value provided for amount_cap, threshold provided for a blacklist type, or neither provided
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/fraud-rules/{id}:
+    patch:
+      tags: [Admin]
+      summary: Update, enable/disable, or re-target a fraud rule
+      description: |
+        `rule_type` itself is immutable — create a new rule instead of
+        changing what kind it is. At least one field is required.
+        Disabling (`enabled: false`) is the usual way to turn a rule
+        off without losing its configuration; see `DELETE` below to
+        remove it permanently. Audit-logged (`admin.fraud_rule.update`).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateFraudRuleRequest"
+      responses:
+        "200":
+          description: Rule updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Rule updated }
+                  rule:
+                    $ref: "#/components/schemas/FraudRule"
+        "400":
+          description: No fields provided, or an invalid value for the fields given
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Admin]
+      summary: Permanently delete a fraud rule
+      description: Audit-logged (`admin.fraud_rule.delete`).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Rule deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Rule deleted }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/fraud-rings:
+    get:
+      tags: [Admin]
+      summary: Detect clusters of accounts linked by a shared device or IP
+      description: |
+        Feature: network/graph fraud-ring detection. Groups accounts
+        that share a device fingerprint or IP address across any of
+        their transactions (no fraud confirmation required to appear —
+        this is meant to surface a cluster *before* it's confirmed).
+        `risk` is `high` when the cluster includes a confirmed-fraud
+        account or is large; `watch` for a mid-size cluster with no
+        confirmed fraud yet; `low` otherwise. See
+        `models/networkRepository.js`'s `detectRings`.
+      responses:
+        "200":
+          description: Every detected cluster of 2+ accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rings:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/FraudRing"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/alerts/{id}/sar-report:
+    get:
+      tags: [Admin]
+      summary: Export a SAR-style compliance report for an alert
+      description: |
+        Feature: SAR-style exportable reports. Bundles the transaction,
+        why it was flagged, its network/dispute status, and its full
+        audit trail into one document — see
+        `services/sarReportService.js`. This is **NOT** a completed
+        regulatory filing (e.g. FinCEN Form 111); it's the internal
+        review document a compliance team would otherwise assemble by
+        hand, and the generated file says so in its own footer/disclaimer
+        row.
+      parameters:
+        - $ref: "#/components/parameters/AlertId"
+        - name: format
+          in: query
+          schema: { type: string, enum: [pdf, csv], default: pdf }
+      responses:
+        "200":
+          description: The rendered report
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+            text/csv:
+              schema: { type: string }
+        "400":
+          description: format is neither pdf nor csv
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/ml/versions:
+    get:
+      tags: [Admin]
+      summary: List every trained model version in the registry
+      description: |
+        Feature: ML model ops. Thin proxy to the Python ml_service's
+        `GET /model/versions` — see `services/mlAdminClient.js`. Returns
+        503 if ml_service is unreachable, same as every other
+        `/admin/ml/*` endpoint below.
+      responses:
+        "200":
+          description: The registry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active: { type: string, example: v1 }
+                  versions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MlModelVersion"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /admin/ml/drift:
+    get:
+      tags: [Admin]
+      summary: Feature/score drift report for the active model
+      description: |
+        Compares a buffer of recently-scored live transactions against
+        the active version's training-time baseline (population
+        stability index per feature, plus mean-score/high-risk-rate
+        drift). Returns `status: "insufficient_data"` until enough live
+        traffic has been scored.
+      responses:
+        "200":
+          description: Drift report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriftReport"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /admin/ml/drift/reset:
+    post:
+      tags: [Admin]
+      summary: Clear the live-traffic buffer used for drift comparison
+      description: Useful right after promoting a new model version, so drift is measured against the new baseline rather than a mix of old and new scores.
+      responses:
+        "200":
+          description: Buffer cleared
+          content:
+            application/json:
+              schema: { type: object }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /admin/ml/shadow/status:
+    get:
+      tags: [Admin]
+      summary: Current shadow/canary deployment status
+      description: |
+        Feature: shadow/canary deployment. When active, every live
+        transaction is scored by both the primary AND the shadow
+        version, but only the primary's score is used — the shadow's
+        score is recorded purely for comparison, so risky new-version
+        behavior can be evaluated on real traffic before it's live.
+      responses:
+        "200":
+          description: Shadow status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShadowStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /admin/ml/shadow/set:
+    post:
+      tags: [Admin]
+      summary: Start shadow-scoring a registry version alongside the primary
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: string, pattern: '^v\d+$', example: v2 }
+      responses:
+        "200":
+          description: Shadow scoring started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShadowStatus"
+        "400":
+          description: version isn't a registered version, or doesn't look like "v1", "v2", etc.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /admin/risk-policy:
+    get:
+      tags: [Admin]
+      summary: Active risk policy, history, limits and score meaning
+      responses:
+        "200":
+          description: Policy in force
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RiskPolicyOverview" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [Admin]
+      summary: Save new thresholds as a new policy version
+      description: History is append-only. A change note (10-500 chars) is mandatory and is audited with before/after values. Takes effect on the next transaction scored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RiskPolicyInput" }
+      responses:
+        "200":
+          description: New policy version created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  policy: { $ref: "#/components/schemas/RiskPolicy" }
+                  previous: { $ref: "#/components/schemas/RiskPolicy" }
+        "400":
+          description: Invalid thresholds, missing note, or identical to the active policy
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/risk-policy/simulate:
+    post:
+      tags: [Admin]
+      summary: Dry-run candidate thresholds against reviewed history
+      description: Changes nothing. Reports flagged volume, confirmed fraud caught and missed, and legitimate transactions flagged, current vs candidate. Labels exist only at or above the lowest alert score; the response warns when a candidate goes below it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: "#/components/schemas/RiskPolicyThresholds" }
+                - type: object
+                  properties:
+                    days: { type: integer, minimum: 1, maximum: 365, default: 30 }
+      responses:
+        "200":
+          description: Simulation result
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400":
+          description: Invalid thresholds
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/risk-policy/calibration:
+    get:
+      tags: [Admin]
+      summary: Does a score still mean what it claims?
+      description: Predicted vs observed confirmed-fraud rate per score band with Wilson 95% intervals, status (insufficient_data, consistent, drifting), results per decision path, and hard-rule overrides evaluated separately from the model.
+      parameters:
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 365, default: 30 } }
+      responses:
+        "200":
+          description: Calibration report
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/ml/shadow/clear:
+    post:
+      tags: [Admin]
+      summary: Stop shadow-scoring, discarding the comparison so far
+      responses:
+        "200":
+          description: Shadow scoring stopped
+          content:
+            application/json:
+              schema: { type: object, properties: { active: { type: boolean, enum: [false] } } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /admin/ml/shadow/promote:
+    post:
+      tags: [Admin]
+      deprecated: true
+      summary: Removed — use the model change workflow
+      description: |
+        Always returns 410. Shadow-score agreement is not evidence of accuracy, so
+        promotion goes through `POST /admin/ml/change-requests` (gates, labelled
+        comparison, a second admin's approval).
+      responses:
+        "410":
+          description: Disabled (code `USE_CHANGE_WORKFLOW`)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/ml/change-requests:
+    get:
+      tags: [Admin]
+      summary: Promotion history (every model change request, newest first)
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending_approval, approved, applying, applied, apply_failed, rejected, cancelled] } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        "200": { description: Change requests with requester, decider, reason, checklist and gate reports }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Admin]
+      summary: Request a promotion or rollback (runs the gates)
+      description: |
+        Runs integrity, compatibility, schema, calibration and metric gates plus the
+        same-benchmark labelled comparison (can take tens of seconds). Hard failures, and a
+        challenger that is worse on labelled data, return `422 GATES_BLOCK` with the report
+        and store nothing. Only one open request per action (`409 CHANGE_ALREADY_OPEN`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, version, reason, checklist]
+              properties:
+                action: { type: string, enum: [promote, rollback] }
+                version: { type: string, example: v4 }
+                reason: { type: string, minLength: 20 }
+                checklist: { type: object, additionalProperties: { type: boolean }, description: Every item from GET /admin/ml/change-requests/checklist must be true }
+      responses:
+        "201": { description: Pending approval }
+        "400": { description: Checklist incomplete (`CHECKLIST_INCOMPLETE`) or invalid body }
+        "409": { description: Version already serving, or another request is open }
+        "422": { description: Blocked by gates (`GATES_BLOCK`) }
+
+  /admin/ml/change-requests/checklist:
+    get:
+      tags: [Admin]
+      summary: Checklists the requester must confirm
+      responses:
+        "200": { description: "{ checklists: { promote: [...], rollback: [...] } }" }
+
+  /admin/ml/change-requests/{id}/approve:
+    post:
+      tags: [Admin]
+      summary: Approve and apply (a different admin than the requester)
+      description: |
+        Every `insufficient`/`warn` gate in the stored report must be listed in
+        `acknowledged_gates`. Hard gates are re-run at apply time; the serving model must still
+        be the one the request was made against. `version` (or `If-Match`) guards against
+        concurrent edits (`409 VERSION_CONFLICT`).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                note: { type: string, minLength: 10 }
+                acknowledged_gates: { type: array, items: { type: string } }
+                version: { type: integer }
+      responses:
+        "200": { description: Applied }
+        "400": { description: Gates not acknowledged (`GATES_NOT_ACKNOWLEDGED`) }
+        "403": { description: Requester cannot approve their own request (`FOUR_EYES`) }
+        "409": { description: Not pending, stale base, gates failed at apply time, or the ML service refused (`APPLY_FAILED`) }
+
+  /admin/ml/change-requests/{id}/reject:
+    post:
+      tags: [Admin]
+      summary: Reject a pending request
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: Rejected }
+        "409": { description: Not pending }
+
+  /admin/ml/change-requests/{id}/cancel:
+    post:
+      tags: [Admin]
+      summary: Cancel your own pending request
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: Cancelled }
+        "403": { description: Only the requester can cancel }
+
+  /admin/ml/gates/{version}:
+    get:
+      tags: [Admin]
+      summary: Dry-run the gates for a version
+      parameters:
+        - { name: version, in: path, required: true, schema: { type: string } }
+        - { name: compare, in: query, schema: { type: string, enum: ["false"] }, description: "`false` skips the challenger-only evidence gates (rollback view)" }
+      responses:
+        "200": { description: Gate report }
+
+  /admin/ml/outcome-evaluation/{version}:
+    get:
+      tags: [Admin]
+      summary: Challenger vs incumbent on analyst verdicts (real transactions)
+      parameters:
+        - { name: version, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "Evaluation; `insufficient` below the sample floors, with its selection-bias caveats" }
+
+  /admin/ml/health:
+    get:
+      tags: [Admin]
+      summary: Rollback triggers for the serving model
+      responses:
+        "200": { description: latency_p95, fallback_rate, score_distribution, confirmed_outcomes + recent events }
+  /admin/ml/health/evaluate:
+    post:
+      tags: [Admin]
+      summary: Evaluate now (records breaches; rolls back only if MODEL_AUTO_ROLLBACK is enabled)
+      responses:
+        "200": { description: Report with the action taken }
+
+  /events:
+    get:
+      tags: [Realtime]
+      summary: Replay events missed while disconnected (cursor-paginated)
+      description: |
+        Events strictly after `after`, oldest first. A user sees only their own events, an admin
+        all real events; simulation events are never returned. `gap: true` means part of the log
+        was pruned — reload state instead of trusting the replay.
+      parameters:
+        - { name: after, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - { name: types, in: query, schema: { type: string }, description: "comma list of transaction:new, alert:new" }
+        - { name: min_risk, in: query, schema: { type: string, enum: [all, medium, high] } }
+      responses:
+        "200": { description: "{ events, next_cursor, has_more, head, oldest_available, gap }" }
+  /events/head:
+    get:
+      tags: [Realtime]
+      summary: Latest event id (starting cursor) and transport status
+      responses:
+        "200": { description: "{ head, oldest_available, transport }" }
+
+  /api-keys:
+    post:
+      tags: [API Keys]
+      summary: Create an API key for your own account
+      description: |
+        Self-service — any logged-in user can create keys for their own
+        account (the same ownership model as webhooks below). Returns
+        the raw key in plaintext exactly once; only its SHA-256 hash is
+        ever stored server-side.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100, example: "Production Backend" }
+                scopes:
+                  type: array
+                  items: { type: string, enum: [transactions:write, transactions:read] }
+                  default: [transactions:write, transactions:read]
+                expiresInDays:
+                  type: integer
+                  minimum: 1
+                  maximum: 3650
+                  description: Omit for no expiration (or the server-configured default — API_KEY_DEFAULT_EXPIRES_DAYS).
+      responses:
+        "201":
+          description: API key created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  name: { type: string }
+                  key: { type: string, description: "Shown only in this response — cannot be retrieved again.", example: "fg_live_9f8e7d6c5b4a3928" }
+                  prefix: { type: string, example: "fg_live_9f8e" }
+                  scopes:
+                    type: array
+                    items: { type: string }
+                  expires_at: { type: string, format: date-time, nullable: true }
+                  created_at: { type: string, format: date-time }
+                  warning: { type: string }
+        "400":
+          description: Invalid name, scopes, or expiresInDays
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    get:
+      tags: [API Keys]
+      summary: List your own API keys
+      description: |
+        Never includes the key value or its hash. Admins see every
+        user's keys by default — pass `mine=true` to scope the list to
+        just the caller's own even as an admin (used by the self-service
+        Settings page so it never mixes in other users' keys).
+      parameters:
+        - name: mine
+          in: query
+          schema: { type: string, enum: ["true"] }
+          description: Forces the list to just the caller's own keys, even for an admin.
+      responses:
+        "200":
+          description: API keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apiKeys:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApiKey"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api-keys/{id}:
+    delete:
+      tags: [API Keys]
+      summary: Revoke an API key
+      description: Owner or admin. Idempotent — revoking an already-revoked key returns 200 without error.
+      parameters:
+        - $ref: "#/components/parameters/ApiKeyId"
+      responses:
+        "200":
+          description: Revoked (or already was)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /webhooks:
+    post:
+      tags: [Webhooks]
+      summary: Register a webhook for your own account
+      description: |
+        Self-service, same ownership model as API keys above. Fires a
+        signed `POST` to `url` whenever one of your transactions is
+        scored medium/high risk (`transaction.flagged`) — see the
+        `X-FraudGuard-Signature` header format in the README's
+        "Integration surface" section. Returns the signing secret in
+        plaintext exactly once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, example: "https://your-app.example.com/fraudguard-hook" }
+                events:
+                  type: array
+                  items: { type: string, enum: [transaction.flagged, "*"] }
+                  default: [transaction.flagged]
+      responses:
+        "201":
+          description: Webhook registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  url: { type: string, format: uri }
+                  events:
+                    type: array
+                    items: { type: string }
+                  active: { type: boolean }
+                  secret: { type: string, description: "Shown only in this response — used to verify X-FraudGuard-Signature on every delivery." }
+                  created_at: { type: string, format: date-time }
+                  warning: { type: string }
+        "400":
+          description: Invalid URL or events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    get:
+      tags: [Webhooks]
+      summary: List your own webhooks
+      description: |
+        Never includes the signing secret. Admins see every user's
+        webhooks by default — pass `mine=true` to scope to just the
+        caller's own, same reasoning as `GET /api-keys`.
+      parameters:
+        - name: mine
+          in: query
+          schema: { type: string, enum: ["true"] }
+          description: Forces the list to just the caller's own webhooks, even for an admin.
+      responses:
+        "200":
+          description: Webhooks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhooks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Webhook"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /webhooks/{id}:
+    patch:
+      tags: [Webhooks]
+      summary: Update a webhook's URL, events, or active state
+      description: Owner or admin. All fields optional — send only what's changing.
+      parameters:
+        - $ref: "#/components/parameters/WebhookId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: { type: string, format: uri }
+                events:
+                  type: array
+                  items: { type: string, enum: [transaction.flagged, "*"] }
+                active: { type: boolean }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhook:
+                    $ref: "#/components/schemas/Webhook"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Webhooks]
+      summary: Remove a webhook
+      description: Owner or admin.
+      parameters:
+        - $ref: "#/components/parameters/WebhookId"
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /webhooks/{id}/deliveries:
+    get:
+      tags: [Webhooks]
+      summary: Recent delivery attempts for a webhook
+      description: Owner or admin — lets an integrator see whether their endpoint is actually receiving events without server log access.
+      parameters:
+        - $ref: "#/components/parameters/WebhookId"
+      responses:
+        "200":
+          description: Delivery attempts, most recent first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deliveries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookDelivery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /disputes:
+    post:
+      tags: [Disputes]
+      summary: Open a dispute (chargeback) on a transaction
+      description: |
+        Any account owner may open a dispute on their own transaction;
+        an admin may also open one on a user's behalf. A transaction can
+        have at most one dispute at a time. `amount_disputed` defaults
+        to the transaction's full amount — override it for a partial
+        dispute (e.g. only one item of a multi-item order). Audit-logged
+        (`disputes.open`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OpenDisputeRequest"
+            example:
+              transaction_id: 482
+              reason: I did not make this purchase.
+      responses:
+        "201":
+          description: Dispute opened
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Dispute opened }
+                  dispute:
+                    $ref: "#/components/schemas/Dispute"
+        "400":
+          description: Missing/invalid transaction_id, or amount_disputed not positive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The transaction belongs to a different, non-admin caller
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The transaction already has an open dispute
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    get:
+      tags: [Disputes]
+      summary: List disputes
+      description: |
+        Admins see every case, optionally filtered by `status`; everyone
+        else sees only disputes on their own transactions.
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [opened, evidence_submitted, won, lost] }
+      responses:
+        "200":
+          description: Matching disputes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  disputes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Dispute"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /disputes/export:
+    get:
+      tags: [Disputes]
+      summary: CSV export of disputes
+      description: |
+        Feature: CSV export. Same `status` filter and ownership scoping
+        as `GET /disputes` above — admins get every account's cases,
+        everyone else only their own. Audit-logged (`disputes.export`).
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [opened, evidence_submitted, won, lost] }
+      responses:
+        "200":
+          description: CSV file
+          content:
+            text/csv:
+              schema: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /disputes/financial-summary:
+    get:
+      tags: [Disputes]
+      summary: Admin financial rollup across all disputes
+      description: |
+        Total exposure, amount actually won back vs. lost to
+        chargeback, amount still pending a resolution, and a win rate
+        computed over resolved (`won`/`lost`) cases only — an
+        `opened`/`evidence_submitted` case isn't a win or a loss yet,
+        so it doesn't dilute the rate either way. Registered before
+        `/{id}` so `financial-summary` is never swallowed as an `:id`.
+      responses:
+        "200":
+          description: Financial summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DisputeFinancialSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /disputes/{id}:
+    get:
+      tags: [Disputes]
+      summary: View a single dispute
+      description: Only the case's account owner or an admin may view it.
+      parameters:
+        - $ref: "#/components/parameters/DisputeId"
+      responses:
+        "200":
+          description: The dispute
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dispute:
+                    $ref: "#/components/schemas/Dispute"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      tags: [Disputes]
+      summary: Advance a dispute's lifecycle (admin only)
+      description: |
+        Admin-only — analogous to `PATCH /alerts/{id}/resolve` being
+        admin-only for the same "we reviewed the evidence, here's the
+        outcome" reason. Lifecycle: `opened` → `evidence_submitted` →
+        `won`/`lost`, though `evidence_submitted` is an optional
+        intermediate step — a case may also resolve straight from
+        `opened` to `won`/`lost` (e.g. the merchant concedes early, or
+        the contest window simply expires). `won`/`lost` are terminal;
+        `evidence_submitted` stamps `evidence_note`/`evidence_submitted_at`
+        and `won`/`lost` stamp `resolution_note`/`resolved_at`.
+        Audit-logged (`disputes.transition`).
+      parameters:
+        - $ref: "#/components/parameters/DisputeId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransitionDisputeRequest"
+            example:
+              status: won
+              note: Chargeback reversed in our favor — signed delivery receipt was sufficient evidence.
+      responses:
+        "200":
+          description: Dispute updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Dispute updated }
+                  dispute:
+                    $ref: "#/components/schemas/Dispute"
+        "400":
+          description: Invalid status value, or not a legal transition from the dispute's current status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/transactions/{id}/decision-history:
+    get:
+      summary: Append-only decision history + investigator/admin actions + hash-chain status (admin)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses: {'200': {description: Timeline}, '404': {description: Not found}}
+  /admin/transactions/{id}/decision-history/verify:
+    get:
+      summary: Recompute the hash chain (admin)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses: {'200': {description: "{valid, records, problems[]}"}}
+  /admin/transactions/{id}/rescore:
+    post:
+      summary: Rescore with current model/rules; appends a record, never overwrites the original (admin)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string, minLength: 10}, apply: {type: boolean, default: false}}}}}}
+      responses: {'201': {description: Recorded (and applied if apply=true)}, '503': {description: ML unavailable; nothing recorded}}
+  /admin/transactions/{id}/legal-holds:
+    post:
+      summary: Place a legal hold (exempts the transaction's history from retention)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses: {'201': {description: Hold placed}}
+  /admin/transactions/{id}/legal-holds/{holdId}:
+    delete:
+      summary: Release a legal hold
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}, {name: holdId, in: path, required: true, schema: {type: integer}}]
+      responses: {'200': {description: Released}}
+  /admin/retention:
+    get: {summary: Effective retention policy and recent runs, responses: {'200': {description: OK}}}
+  /admin/retention/run:
+    post:
+      summary: Run retention (dry run by default; a real run needs dry_run=false and a reason)
+      responses: {'200': {description: Counts and digest}}
+
+  /system/status:
+    get:
+      summary: Is the ML scoring service answering? (drives the top-bar "ML service ok/down" pill)
+      description: Any signed-in user. Calls the ML service's open /health with a 1.5 s timeout and caches the answer for 15 s; an unreachable service is reported as "down", never as an error (the fraud engine falls back to the rule engine).
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: "{api_version, ml: {status: ok|down, latencyMs, checkedAt}}" }
+        '401': { description: Unauthenticated }
+  /cognee-memory/health:
+    get:
+      tags: [Cognee memory]
+      summary: Integration health (200 even when the Cognee service is down; check `status`)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: "status: ok | degraded | unreachable | not_configured; includes graph/vector store checks, LLM and narrative-layer state" }
+        '401': { description: Unauthenticated }
+        '403': { description: Not an admin }
+  /cognee-memory/status:
+    get:
+      tags: [Cognee memory]
+      summary: Compact connection status (kept for backward compatibility)
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: "{configured, connected, status, dataset, lastSyncedAt}" } }
+  /cognee-memory/stats:
+    get:
+      tags: [Cognee memory]
+      summary: Memory statistics and synchronisation state
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: "{sync: {records, pendingNewTransactions, lastRun, scheduler...}, memory: {structured_entities, edges_total, suspicious_devices, narrative_documents, cognify...}}" } }
+  /cognee-memory/sync:
+    post:
+      tags: [Cognee memory]
+      summary: Synchronise FraudGuard data into Cognee (read-only extraction, pseudonymised; unchanged records are skipped)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                mode: { type: string, enum: [incremental, full], default: incremental }
+                force: { type: boolean, default: false, description: Re-send even if the content hash is unchanged }
+                maxRecords: { type: integer, minimum: 1, maximum: 5000 }
+      responses:
+        '200': { description: "{runId, status: completed|completed_with_errors, ingested, skippedUnchanged, failed, morePending}" }
+        '409': { description: A synchronisation run is already in progress (details.code = sync_busy) }
+        '429': { description: Rate limited }
+        '502': { description: Cognee service error or service key mismatch }
+        '503': { description: Not configured or unreachable }
+  /cognee-memory/sync/runs:
+    get:
+      tags: [Cognee memory]
+      summary: Recent ingestion activity
+      security: [{ bearerAuth: [] }]
+      parameters: [{ in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 50, default: 10 } }]
+      responses: { '200': { description: "{runs: [{id, trigger, mode, actor, status, startedAt, finishedAt, scanned, ingested, skippedUnchanged, failed}]}" } }
+  /cognee-memory/search:
+    post:
+      tags: [Cognee memory]
+      summary: Natural-language search over historical fraud intelligence
+      description: Returns retrieved `evidence` (never generated). Each item is cross-checked against the live record (`live.memoryOutOfDate`). A generated `answer` is returned only when `includeAnswer` is true and an LLM is configured, and is labelled as AI-generated.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              additionalProperties: false
+              properties:
+                query: { type: string, minLength: 2, maxLength: 1000 }
+                topK: { type: integer, minimum: 1, maximum: 25, default: 8 }
+                sourceTypes: { type: array, items: { type: string, enum: [transaction, investigation] } }
+                includeAnswer: { type: boolean, default: false }
+      responses:
+        '200': { description: "{query, evidence: {label, items[]}, answer: null | {text, generated: true, label}, diagnostics}" }
+        '400': { description: Validation error }
+        '503': { description: Not configured, unreachable, or embedding model not ready (retry shortly) }
+  /cognee-memory/entities:
+    get:
+      tags: [Cognee memory]
+      summary: Graph entities (customers, merchants, devices, patterns, cases, transactions)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: query, name: type, schema: { type: string, enum: [Transaction, Investigation, Customer, Merchant, Device, FraudPattern] } }
+        - { in: query, name: q, schema: { type: string, maxLength: 100 } }
+        - { in: query, name: suspiciousOnly, schema: { type: string, enum: ['true', 'false'], default: 'false' } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+        - { in: query, name: offset, schema: { type: integer, minimum: 0, default: 0 } }
+      responses: { '200': { description: "{total, entities: [{id, type, label, degree, signals}]}" }, '400': { description: Validation error } }
+  /cognee-memory/entities/{id}/related:
+    get:
+      tags: [Cognee memory]
+      summary: Entity neighbourhood (nodes and edges)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+        - { in: query, name: depth, schema: { type: integer, minimum: 1, maximum: 2, default: 1 } }
+      responses: { '200': { description: "{center, depth, truncated, nodes[], edges[]}" }, '404': { description: Entity not found } }
+  /cognee-memory/assistant:
+    post:
+      tags: [Cognee memory]
+      summary: AI investigation assistant for a transaction or a case
+      description: "Three separately labelled layers: `subject` (current facts from FraudGuard's database), `evidence` (retrieved from Cognee, ids E1..En) and `ai` (generated; null with an `ai_status` when no LLM is configured or the call failed)."
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, id]
+              additionalProperties: false
+              properties:
+                kind: { type: string, enum: [transaction, investigation] }
+                id: { type: integer, minimum: 1 }
+                question: { type: string, minLength: 2, maxLength: 1000 }
+                topK: { type: integer, minimum: 1, maximum: 15, default: 8 }
+      responses:
+        '200': { description: "{subject, evidence, ai, ai_status: ok | llm_not_configured | generation_failed}" }
+        '404': { description: Record not found }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Access token returned by `/auth/login`, `/auth/register`, or `/auth/refresh`. Send as `Authorization: Bearer <accessToken>`."
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Service-to-service auth (feature: API keys) — an alternative to
+        a JWT session for integrations that shouldn't hold a human's
+        password-derived credential. Create one via `POST /api-keys`
+        (shown in plaintext exactly once). Acts as the account that
+        created it, subject to the key's own `scopes`
+        (`transactions:read`/`transactions:write`) — see
+        `middleware/apiKeyAuth.js`. Only accepted on the
+        `/transactions*` routes; alerts/admin stay JWT-only.
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    AlertId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    ApiKeyId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    WebhookId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    DisputeId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+
+  responses:
+    Unauthorized:
+      description: Missing, invalid, or expired access token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Authenticated, but not allowed to perform this action
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: Too many requests
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: ml_service is unreachable (every /admin/ml/* endpoint proxies to the Python ml_service — see services/mlAdminClient.js)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    RiskPolicyThresholds:
+      type: object
+      required: [medium_threshold, high_threshold]
+      properties:
+        medium_threshold: { type: number, description: "Score (probability x 100) at or above which a transaction is sent to review" }
+        high_threshold: { type: number, description: "Score at or above which a transaction is treated as fraud" }
+        review_capacity_per_day: { type: integer, nullable: true }
+    RiskPolicyInput:
+      allOf:
+        - { $ref: "#/components/schemas/RiskPolicyThresholds" }
+        - type: object
+          required: [note]
+          properties:
+            note: { type: string, minLength: 10, maxLength: 500 }
+    RiskPolicy:
+      type: object
+      properties:
+        version: { type: integer }
+        medium_threshold: { type: number }
+        high_threshold: { type: number }
+        review_capacity_per_day: { type: integer, nullable: true }
+        note: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+    RiskPolicyOverview:
+      type: object
+      properties:
+        active: { $ref: "#/components/schemas/RiskPolicy" }
+        history: { type: array, items: { $ref: "#/components/schemas/RiskPolicy" } }
+        defaults: { $ref: "#/components/schemas/RiskPolicyThresholds" }
+        limits: { type: object, additionalProperties: true }
+        score_meaning: { type: string }
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
+        requestId: { type: string, description: "Echoed from the X-Request-Id response header — include this when reporting an issue." }
+
+    ValidationErrorResponse:
+      type: object
+      properties:
+        error: { type: string, example: Validation failed }
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string, example: amount }
+              message: { type: string, example: Amount must be greater than 0 }
+
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        username: { type: string }
+        email: { type: string, format: email }
+        role: { type: string, enum: [user, admin] }
+        email_verified: { type: integer, enum: [0, 1] }
+        totp_enabled: { type: integer, enum: [0, 1] }
+
+    UserWithStats:
+      allOf:
+        - $ref: "#/components/schemas/User"
+        - type: object
+          properties:
+            total_transactions: { type: integer }
+            fraud_rate: { type: number, format: float }
+            is_demo:
+              type: boolean
+              description: True for seeded demo accounts (reserved @demo.fraudguard.io domain). Real sign-ups on that domain are rejected.
+
+    RegisterRequest:
+      type: object
+      required: [username, email, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 30 }
+        email: { type: string, format: email }
+        password:
+          type: string
+          minLength: 8
+          description: Must include an uppercase letter, a lowercase letter, a number, and a symbol.
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string }
+
+    TokenPairResponse:
+      type: object
+      properties:
+        accessToken: { type: string, description: "Short-lived JWT (default 15m)" }
+        refreshToken: { type: string, description: "Long-lived, rotating opaque token (default 30d)" }
+        user:
+          $ref: "#/components/schemas/User"
+
+    MfaChallengeResponse:
+      type: object
+      description: Returned by POST /auth/login instead of a token pair when the account has 2FA enabled.
+      properties:
+        mfaRequired: { type: boolean, example: true }
+        mfaToken: { type: string, description: "Short-lived (default 5m) single-purpose JWT — pass to POST /auth/login/mfa, never usable as a real access token." }
+
+    MfaLoginRequest:
+      type: object
+      required: [mfaToken, code]
+      properties:
+        mfaToken: { type: string }
+        code: { type: string, description: "A 6-digit TOTP code, or a single-use backup code (e.g. \"a1b2-c3d4e5\")." }
+
+    CreateTransactionRequest:
+      type: object
+      required: [amount, merchant, category, location, card_type]
+      properties:
+        amount:
+          type: number
+          format: float
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 1000000
+        merchant:
+          type: string
+          minLength: 1
+          maxLength: 100
+        category:
+          type: string
+          enum: [grocery, food, electronics, travel, entertainment, utilities, clothing, health, crypto, gambling, wire_transfer]
+        location:
+          type: string
+          enum: ["New York, US", "London, UK", "Toronto, CA", "Bengaluru, IN", "Sydney, AU", "Berlin, DE", "Singapore, SG", "Lagos, NG", "Unknown", "Anonymous Proxy"]
+        card_type:
+          type: string
+          enum: [credit, debit, prepaid]
+
+    Transaction:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer }
+        amount: { type: number, format: float }
+        merchant: { type: string }
+        category: { type: string }
+        location: { type: string }
+        card_type: { type: string }
+        is_fraud: { type: integer, enum: [0, 1] }
+        fraud_score: { type: number, format: float, description: "Calibrated probability of fraud x 100 when the model is calibrated" }
+        model_probability: { type: number, format: float, nullable: true, description: "Calibrated P(fraud) from the model, before any policy" }
+        policy_version: { type: integer, nullable: true, description: "Risk policy version that produced risk_level" }
+        risk_level: { type: string, enum: [low, medium, high] }
+        fraud_reasons:
+          type: array
+          items: { type: string }
+        scoring_method:
+          type: string
+          enum: [ml_model, hard_rule_override, "hard_rule_override+ml", rule_engine_fallback]
+        model_version: { type: string, nullable: true }
+        shap_explanation:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShapFactor"
+        status: { type: string, enum: [completed, pending_step_up, blocked], example: completed }
+        created_at: { type: string, format: date-time }
+
+    ShapFactor:
+      type: object
+      properties:
+        feature: { type: string, example: "is new device" }
+        shap_value: { type: number, format: float, example: 0.4922 }
+        effect: { type: string, enum: [increased_risk, decreased_risk] }
+
+    TransactionAnalysisResponse:
+      type: object
+      properties:
+        transaction:
+          $ref: "#/components/schemas/Transaction"
+        analysis:
+          type: object
+          properties:
+            is_fraud: { type: integer, enum: [0, 1] }
+            fraud_score: { type: number, format: float }
+            risk_level: { type: string, enum: [low, medium, high] }
+            fraud_reasons:
+              type: array
+              items: { type: string }
+            scoring_method:
+              type: string
+              enum: [ml_model, hard_rule_override, "hard_rule_override+ml", rule_engine_fallback]
+            model_used: { type: string, nullable: true, example: xgboost }
+            model_version: { type: string, nullable: true, example: v3 }
+            hard_flag_triggered:
+              type: array
+              nullable: true
+              items: { type: string }
+            shap_explanation:
+              type: array
+              items:
+                $ref: "#/components/schemas/ShapFactor"
+            message: { type: string, example: "✅ Transaction looks safe." }
+        step_up:
+          type: object
+          nullable: true
+          description: |
+            Feature: step-up authentication. Present (non-null) only
+            when this transaction was held pending step-up verification
+            — see `GET/POST /transactions/{id}/step-up*` above.
+          properties:
+            required: { type: boolean, enum: [true] }
+            transaction_id: { type: integer }
+            challenge_token: { type: string }
+            method: { type: string, example: otp }
+            expires_at: { type: string, format: date-time }
+            verify_url: { type: string, example: /api/transactions/501/step-up/verify }
+
+    TransactionStats:
+      type: object
+      properties:
+        total_transactions: { type: integer }
+        fraud_count: { type: integer }
+        fraud_rate: { type: number, format: float }
+        total_amount: { type: number, format: float }
+        avg_fraud_score: { type: number, format: float }
+        medium_count: { type: integer, description: "Transactions scored medium risk (held for review)" }
+        declined_count: { type: integer, description: "Transactions declined by risk-based verification (status blocked)" }
+        held_count: { type: integer, description: "Transactions held pending step-up verification" }
+
+    Alert:
+      type: object
+      properties:
+        id: { type: integer }
+        transaction_id: { type: integer }
+        user_id: { type: integer }
+        message: { type: string }
+        risk_level: { type: string, enum: [medium, high] }
+        resolved: { type: integer, enum: [0, 1], description: "Legacy boolean, kept in sync with status = 'resolved'. Prefer status for new integrations." }
+        status: { type: string, enum: [open, in_review, resolved] }
+        verdict: { type: string, enum: [confirmed_fraud, false_positive], nullable: true, description: "Set only once resolved — see PATCH /alerts/{id}/resolve." }
+        resolution_note: { type: string, nullable: true }
+        assigned_to: { type: integer, nullable: true, description: "User id of the assigned analyst, if any." }
+        assignee_username: { type: string, nullable: true }
+        resolved_by: { type: integer, nullable: true }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        merchant: { type: string }
+        amount: { type: number, format: float }
+        username: { type: string, description: "Present on admin's alerts.allWithUsername view" }
+
+    ResolveAlertRequest:
+      type: object
+      required: [verdict]
+      properties:
+        verdict:
+          type: string
+          enum: [confirmed_fraud, false_positive]
+          description: Required — the whole point of this endpoint is recording an analyst's confirmed/false-positive call, not just flipping a boolean.
+        note:
+          type: string
+          maxLength: 1000
+
+    AssignAlertRequest:
+      type: object
+      required: [assigneeId]
+      properties:
+        assigneeId:
+          type: integer
+          nullable: true
+          description: User id of the admin to assign to. Pass null to unassign.
+
+    Pagination:
+      type: object
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+        has_next: { type: boolean }
+        has_prev: { type: boolean }
+
+    SimulationStatus:
+      type: object
+      properties:
+        running: { type: boolean }
+        intervalMs: { type: integer }
+        fraudRatio: { type: number, format: float }
+        transactionCount: { type: integer }
+        fraudCount: { type: integer }
+        startedBy: { type: string, nullable: true }
+
+    AuditLogEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        created_at: { type: string, format: date-time }
+        user_id: { type: integer, nullable: true }
+        username: { type: string, nullable: true }
+        action: { type: string, example: alerts.resolve }
+        target_type: { type: string, nullable: true, example: alert }
+        target_id: { type: integer, nullable: true }
+        outcome: { type: string, enum: [success, failure, denied] }
+        details: { type: object, additionalProperties: true }
+
+    ApiKey:
+      type: object
+      description: Never includes the key value or its hash — see POST /api-keys for the one-time plaintext response.
+      properties:
+        id: { type: integer }
+        user_id: { type: integer }
+        username: { type: string, description: "Present on admin's list view" }
+        name: { type: string }
+        key_prefix: { type: string, example: "fg_live_9f8e" }
+        scopes:
+          type: array
+          items: { type: string, enum: [transactions:write, transactions:read] }
+        created_by: { type: integer, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true, description: "null means the key never expires." }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    Webhook:
+      type: object
+      description: Never includes the signing secret — see POST /webhooks for the one-time plaintext response.
+      properties:
+        id: { type: integer }
+        user_id: { type: integer }
+        username: { type: string, description: "Present on admin's list view" }
+        url: { type: string, format: uri }
+        events:
+          type: array
+          items: { type: string, enum: [transaction.flagged, "*"] }
+        active: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    WebhookDelivery:
+      type: object
+      properties:
+        id: { type: integer }
+        webhook_id: { type: integer }
+        event: { type: string, example: transaction.flagged }
+        payload: { type: string, description: "The exact JSON body sent" }
+        response_status: { type: integer, nullable: true, description: "null if the request itself failed (timeout, DNS, connection refused, etc.) rather than returning a non-2xx status" }
+        success: { type: integer, enum: [0, 1] }
+        attempt: { type: integer, description: "1-indexed; retries increment this on the same delivery" }
+        error: { type: string, nullable: true, description: "Network-level error message, when response_status is null" }
+        created_at: { type: string, format: date-time }
+
+    Dispute:
+      type: object
+      properties:
+        id: { type: integer }
+        transaction_id: { type: integer }
+        status: { type: string, enum: [opened, evidence_submitted, won, lost] }
+        amount_disputed: { type: number, format: float }
+        reason: { type: string, nullable: true }
+        evidence_note: { type: string, nullable: true }
+        resolution_note: { type: string, nullable: true }
+        opened_by: { type: integer, nullable: true }
+        opened_by_username: { type: string, nullable: true }
+        opened_at: { type: string, format: date-time }
+        evidence_submitted_at: { type: string, format: date-time, nullable: true }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        updated_by: { type: integer, nullable: true }
+        updated_by_username: { type: string, nullable: true, description: "Present on GET /disputes/{id}" }
+        updated_at: { type: string, format: date-time }
+        merchant: { type: string, description: "Joined from the underlying transaction" }
+        transaction_amount: { type: number, format: float, description: "The transaction's full amount, as opposed to amount_disputed" }
+        transaction_user_id: { type: integer, description: "Present on GET /disputes/{id} — used for the ownership check" }
+        account_username: { type: string, description: "Present on the admin list view (GET /disputes)" }
+
+    OpenDisputeRequest:
+      type: object
+      required: [transaction_id]
+      properties:
+        transaction_id: { type: integer, minimum: 1 }
+        amount_disputed:
+          type: number
+          exclusiveMinimum: 0
+          description: Optional override for a partial dispute. Defaults to the transaction's full amount if omitted.
+        reason:
+          type: string
+          maxLength: 500
+
+    TransitionDisputeRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [evidence_submitted, won, lost]
+          description: The next lifecycle step. Not every value is legal from every current status — see PATCH /disputes/{id}.
+        note:
+          type: string
+          maxLength: 2000
+
+    DisputeFinancialSummary:
+      type: object
+      properties:
+        total_disputes: { type: integer }
+        by_status:
+          type: object
+          properties:
+            opened: { type: integer }
+            evidence_submitted: { type: integer }
+            won: { type: integer }
+            lost: { type: integer }
+        total_amount_disputed: { type: number, format: float }
+        amount_won: { type: number, format: float }
+        amount_lost: { type: number, format: float }
+        amount_pending: { type: number, format: float, description: "Sum of amount_disputed for cases not yet won or lost" }
+        win_rate:
+          type: number
+          nullable: true
+          description: "Percentage (0-100) of resolved (won+lost) cases that were won. null when no case has been resolved yet."
+
+    FraudRule:
+      type: object
+      properties:
+        id: { type: integer }
+        rule_type: { type: string, enum: [blacklist_merchant, blacklist_location, blacklist_device, blacklist_ip, amount_cap] }
+        value: { type: string, nullable: true, description: "Set for blacklist_* types; null for amount_cap" }
+        threshold: { type: number, format: float, nullable: true, description: "Set for amount_cap; null for blacklist_* types" }
+        enabled: { type: boolean }
+        reason: { type: string, nullable: true }
+        created_by: { type: integer, nullable: true }
+        created_by_username: { type: string, nullable: true, description: "Present on GET /admin/fraud-rules's list view" }
+        updated_by: { type: integer, nullable: true }
+        updated_by_username: { type: string, nullable: true, description: "Present on GET /admin/fraud-rules's list view" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateFraudRuleRequest:
+      type: object
+      required: [rule_type]
+      properties:
+        rule_type: { type: string, enum: [blacklist_merchant, blacklist_location, blacklist_device, blacklist_ip, amount_cap] }
+        value: { type: string, maxLength: 255, description: "Required for blacklist_* types; omit for amount_cap" }
+        threshold: { type: number, exclusiveMinimum: 0, description: "Required for amount_cap; omit for blacklist_* types" }
+        reason: { type: string, maxLength: 500 }
+
+    UpdateFraudRuleRequest:
+      type: object
+      description: At least one field required. rule_type cannot be changed.
+      properties:
+        value: { type: string, maxLength: 255 }
+        threshold: { type: number, exclusiveMinimum: 0 }
+        enabled: { type: boolean }
+        reason: { type: string, maxLength: 500 }
+
+    FraudRing:
+      type: object
+      properties:
+        ring_id: { type: string, example: "device:a1b2c3d4" }
+        size: { type: integer, description: "Number of accounts in this cluster" }
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              user_id: { type: integer }
+              username: { type: string }
+        shared_device_count: { type: integer }
+        shared_ip_count: { type: integer }
+        confirmed_fraud_members:
+          type: array
+          items: { type: string }
+          description: Usernames within this cluster that have at least one alert resolved as confirmed_fraud
+        risk: { type: string, enum: [low, watch, high] }
+
+    MlModelVersion:
+      type: object
+      properties:
+        version: { type: string, example: v2 }
+        trained_at: { type: string, format: date-time }
+        best_model_type: { type: string, example: xgboost }
+        pr_auc: { type: number, format: float }
+        previous_promoted_pr_auc: { type: number, format: float, nullable: true }
+        n_rows: { type: integer }
+        n_features: { type: integer }
+        fraud_rate: { type: number, format: float }
+        promoted: { type: boolean }
+        notes: { type: string, nullable: true }
+
+    DriftReport:
+      type: object
+      properties:
+        status: { type: string, enum: [stable, moderate_drift, significant_drift, insufficient_data] }
+        version: { type: string, example: v1 }
+        n_samples: { type: integer }
+        min_required: { type: integer, description: "Present when status is insufficient_data" }
+        flagged_features:
+          type: object
+          additionalProperties: { type: number }
+          description: "Feature name -> population stability index, for features whose drift crossed the flagging threshold"
+        score_drift:
+          type: object
+          nullable: true
+          properties:
+            baseline_mean_score: { type: number }
+            live_mean_score: { type: number }
+            baseline_high_risk_rate: { type: number }
+            live_high_risk_rate: { type: number }
+
+    ShadowStatus:
+      type: object
+      properties:
+        active: { type: boolean }
+        shadow_version: { type: string, nullable: true, example: v2 }
+        shadow_model_type: { type: string, nullable: true }
+        primary_version: { type: string, nullable: true, example: v1 }
+        primary_model_type: { type: string, nullable: true }
+        n_compared: { type: integer, description: "Live transactions scored by both versions so far" }
+        risk_level_agreement_rate: { type: number, nullable: true, description: "0-1; how often primary and shadow agreed on low/medium/high" }
+        mean_absolute_score_diff: { type: number, nullable: true }
+        pct_shadow_scored_higher: { type: number, nullable: true, description: "0-1; fraction of compared transactions where the shadow scored the transaction riskier than the primary" }

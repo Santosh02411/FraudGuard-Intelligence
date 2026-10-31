@@ -1,0 +1,6 @@
+[run]
+omit =
+    tests/*
+    */__pycache__/*
+[report]
+fail_under = 45

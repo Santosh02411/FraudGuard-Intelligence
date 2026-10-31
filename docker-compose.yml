@@ -1,0 +1,166 @@
+# FraudGuard — full stack via Docker Compose
+# =============================================
+# `docker compose up --build` gets you all three services talking to
+# each other with zero manual setup: ml_service (FastAPI, port 8001),
+# backend (Express, port 5000), frontend (nginx serving the CRA build,
+# port 3100). Uses SQLite (a named volume, so data survives restarts)
+# and auto-seeds realistic demo data on first boot — see SEED_ON_BOOT
+# below and README's "Seeding demo data" section.
+#
+# This is a demo/local-eval setup, not a production deployment
+# topology — see README's "Deployment" section for actually deploying
+# each service to Render/Railway/Vercel/Netlify with real Postgres,
+# real secrets, and real CORS origins instead of the localhost/dev
+# defaults used here.
+
+services:
+  ml_service:
+    build:
+      context: ./ml_service
+    # NOT published to the host (no `ports:`): only the backend, over the
+    # compose network, can reach it — and it also requires the keys below.
+    # To poke at it from your machine, temporarily add `ports: ["127.0.0.1:8001:8001"]`.
+    expose:
+      - "8001"
+    environment:
+      # Dev-only default keys — override via a .env file next to this
+      # compose file (or the shell) for anything beyond local evaluation.
+      ML_SERVICE_API_KEY: ${ML_SERVICE_API_KEY:-dev-only-ml-service-key-change-me-0000000000}
+      ML_ADMIN_API_KEY: ${ML_ADMIN_API_KEY:-dev-only-ml-admin-key-change-me-11111111111}
+      # Signs/verifies model manifests (docs/MODEL_GOVERNANCE.md). Unset = hashes only (tamper-evident, not tamper-proof).
+      MODEL_SIGNING_KEY: ${MODEL_SIGNING_KEY:-}
+      MONITOR_DB_PATH: /app/models/monitor.db
+    volumes:
+      # Registry, active-version pointer and persisted monitoring state survive
+      # restarts (a new named volume is seeded from the image's models/ folder).
+      - ml_models:/app/models
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "5000:5000"
+    environment:
+      NODE_ENV: development
+      PORT: 5000
+      # Dev-only convenience default — the app refuses to start with this
+      # in staging/production (see backend/config/env.js). Generate a real
+      # one with: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+      JWT_SECRET: dev_only_change_this_to_something_random_and_long
+      CORS_ALLOWED_ORIGINS: http://localhost:3100
+      ML_SERVICE_URL: http://ml_service:8001
+      ML_SERVICE_API_KEY: ${ML_SERVICE_API_KEY:-dev-only-ml-service-key-change-me-0000000000}
+      ML_ADMIN_API_KEY: ${ML_ADMIN_API_KEY:-dev-only-ml-admin-key-change-me-11111111111}
+      ADMIN_PASSWORD: admin123
+      # Shared Socket.IO adapter: lets you run several backend replicas
+      # (docker compose up --scale backend=2 needs a load balancer in front).
+      REDIS_URL: redis://redis:6379
+      # DEMO ONLY: NODE_ENV is development here, so seeding is allowed. The
+      # backend refuses SEED_ON_BOOT in staging/production (config/env.js).
+      # Seed script on fresh deploy (feature: realistic demo data) — runs
+      # once on first boot (no-ops on restart if demo data already
+      # exists; see backend/scripts/seedDemoData.js). Set to "false" if
+      # you'd rather start from an empty DB and seed manually via
+      # `docker compose exec backend npm run seed`.
+      SEED_ON_BOOT: "true"
+      # Optional Cognee memory: empty = integration off. To enable, run with
+      #   COGNEE_SERVICE_URL=http://cognee_service:8002 docker compose --profile cognee up
+      # (see README "Cognee Fraud Intelligence Memory").
+      COGNEE_SERVICE_URL: ${COGNEE_SERVICE_URL:-}
+      COGNEE_SERVICE_API_KEY: ${COGNEE_SERVICE_API_KEY:-dev-only-cognee-service-key-change-me-000000}
+      SEED_ON_BOOT_USERS: "15"
+      SEED_ON_BOOT_DAYS: "60"
+    volumes:
+      - backend_data:/data
+    depends_on:
+      ml_service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:5000/api/v1/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Browser-side requests hit the backend via the HOST's published
+        # port (localhost:5000), not the Docker-internal service name —
+        # the frontend runs in the user's browser, outside the compose
+        # network, so "backend:5000" would not resolve for it.
+        REACT_APP_API_URL: http://localhost:5000/api/v1
+        REACT_APP_SOCKET_URL: http://localhost:5000
+    ports:
+      - "3100:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # Optional: Cognee fraud-intelligence memory service. Not started by default - use `--profile cognee`.
+  # NOT published to the host; only the backend (over the compose network, with the service key) can reach it.
+  cognee_service:
+    profiles: ["cognee"]
+    build:
+      context: ./cognee_service
+    expose:
+      - "8002"
+    environment:
+      COGNEE_SERVICE_ENV: development
+      COGNEE_SERVICE_API_KEY: ${COGNEE_SERVICE_API_KEY:-dev-only-cognee-service-key-change-me-000000}
+      COGNEE_DATASET: fraudguard-intelligence
+      # Needed for the narrative layer, graph-completion answers and the assistant's suggestions.
+      # Without them the typed graph and vector search over record summaries still work.
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4o-mini}
+    volumes:
+      - cognee_data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=3)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+volumes:
+  backend_data:
+  ml_models:
+  cognee_data:

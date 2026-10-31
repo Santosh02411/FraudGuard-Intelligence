@@ -1,0 +1,26 @@
+{
+  "version": "v3",
+  "trained_at": "2026-10-19T11:43:44.859193+00:00",
+  "best_model_type": "random_forest",
+  "pr_auc": 0.9598,
+  "previous_promoted_pr_auc": 0.943,
+  "promoted": true,
+  "n_rows": 155303,
+  "n_features": 43,
+  "fraud_rate": 0.0152,
+  "dataset": "synthetic",
+  "evaluation_protocol": "chronological_purged_val_selected_val_calibrated_v2",
+  "calibration": {
+    "method": "isotonic",
+    "fitted_on": "validation split (held out from training and from the test set)",
+    "n_validation_rows": 31061,
+    "n_validation_positives": 452,
+    "validation_fraud_rate": 0.014552
+  },
+  "recommended_thresholds": {
+    "medium": 4.1,
+    "high": 16.7,
+    "basis": "medium = score at 2% review capacity on the validation set; high = lowest score with >= 80% validation precision"
+  },
+  "notes": "v3: chronological purged split, validation-fitted calibrator, synthetic-labelled evaluation"
+}

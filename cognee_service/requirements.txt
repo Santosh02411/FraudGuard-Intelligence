@@ -1,0 +1,7 @@
+# FraudGuard Cognee memory service — runtime dependencies.
+# Kept separate from ml_service/ on purpose: Cognee pulls a large dependency tree
+# (graph + vector engines, litellm, ...) that must not constrain the ML stack's pins.
+cognee>=1.6.6,<2
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7

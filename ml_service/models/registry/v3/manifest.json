@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "version": "v3",
+  "created_at": "2026-10-23T10:32:26.159338+00:00",
+  "files": {
+    "model.pkl": "d5a2829a9a33c653abb173c0f7a7d472106a5aa806cb0a60508b13c0f97e8959",
+    "scaler.pkl": "d2b50214858a436342a613a0eccb940056fef805acefc119f4a8edc38adc1fc0",
+    "calibrator.pkl": "01e8e1f21c8eb8200c0f453c0c87ec9abc0a1725409a6a41318ce9c2b9d6ea41",
+    "feature_columns.json": "50faf4330b280d77cf528b420f57693e16dbe34182edfdc8d1de183119df4f0a",
+    "metrics.json": "cc909a1dbd5190e801f4278eb98518a9ed04b817718af74c61ca1ed4068a2d2b",
+    "metadata.json": "9ff0c29d71069705da4c100b6208a6188d928b88f7e769a539b1aa478a28bd5b",
+    "baseline_stats.json": "54b2e3873cbf01b2520e3ab8472d1b79ad3e2e8c293458002c96395c0e27b781",
+    "background_sample.npy": "6bf3a77f0d7621e2da139d922a63b76c63adb2c496b65cb6a0a96934dee695e2"
+  },
+  "feature_count": 43,
+  "feature_schema_sha256": "e55f90bff97ac9448d245dbaeb76960110f20e7fd1400fde671aab480975b339",
+  "runtime": {
+    "python": "3.13.16",
+    "sklearn": "1.9.1",
+    "xgboost": "3.4.1",
+    "numpy": "2.5.3",
+    "pandas": "3.0.5",
+    "joblib": "1.6.0"
+  },
+  "adopted": true,
+  "adopted_note": "legacy version: manifest written after the fact; integrity is attested from adoption time, not training time"
+}
