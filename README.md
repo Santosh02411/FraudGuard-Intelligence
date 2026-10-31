@@ -1,27 +1,91 @@
 # 🛡️ FraudGuard
 
-Fraud detection app: React frontend + Node/Express backend (SQLite) + Python ML service.
-Optional: AI Memory (Cognee). Includes a **Try demo** button that needs no setup.
+**An intelligent fraud detection platform** built with a React frontend, Node.js/Express backend, SQLite database, and Python-based machine learning service.
 
-**You need:** Node 18+, npm 9+, Python 3.10+.
+FraudGuard combines machine learning and rule-based fraud detection to identify suspicious transactions, investigate potential threats, and visualize fraud patterns.
 
-> Run **one command per line** and press Enter after each. Open a **new terminal** for each numbered step.
+It also includes an optional **AI Memory powered by Cognee** for contextual fraud intelligence and historical investigation.
 
-### ✅ Make sure you are running THIS version (build v3)
-
-Open http://localhost:3100. The sign-in page must show **a "Try demo" button** under _Sign In_, and a footer saying
-**"FraudGuard build v3"** plus **"Backend connected"** (green). After signing in you get a **left sidebar** with grouped menus.
-If you don't see these, you are running an older copy: unzip the v3 ZIP into a **new** folder and start again from step 1.
+> **Try it instantly:** Use the built-in **Try demo** button to explore FraudGuard without installing dependencies, creating an account, or starting the backend.
 
 ---
 
-## Quick start
+## ✨ Features
 
-### 1) ML service (optional — without it the app uses the rule engine)
+- **Fraud Detection:** Identify suspicious transactions using machine learning and rule-based scoring.
+- **Interactive Dashboard:** Monitor transaction activity, fraud alerts, risk levels, and analytics.
+- **User Authentication:** Role-based access with admin and demo-user accounts.
+- **Transaction Management:** Review and investigate transaction records.
+- **Machine Learning Service:** Python-based fraud prediction using the included trained model.
+- **AI Memory (Optional):** Cognee-powered contextual search and fraud intelligence.
+- **Demo Mode:** Explore the application instantly using browser-based sample data.
+- **API Integration:** React frontend communicates with the Express backend and optional ML service.
 
-A trained model is already included. No training needed.
+---
+
+## 🧰 Technology Stack
+
+| Component | Technologies |
+|---|---|
+| Frontend | React, JavaScript, CSS |
+| Backend | Node.js, Express.js |
+| Database | SQLite |
+| Machine Learning | Python, scikit-learn, XGBoost |
+| ML API | FastAPI, Uvicorn |
+| AI Memory (Optional) | Cognee |
+| Development Tools | npm, Git, Python |
+
+---
+
+## 📋 Prerequisites
+
+Install the following before running the application:
+
+- Node.js 18 or later
+- npm 9 or later
+- Python 3.10 or later
+
+**Optional:** An LLM API key is required for AI-generated suggestions in the Cognee service.
+
+---
+
+## 🚀 Quick Start
+
+The following instructions assume you have extracted the FraudGuard project ZIP file and opened a terminal in the project root directory.
+
+**Important:**
+- Run each command separately and press Enter.
+- Open a new terminal for each numbered step.
+- Keep the backend and frontend terminals running while using the application.
+- The ML service and Cognee service are optional.
+
+### ✅ Verify You Are Running Build v3
+
+Open:
+
+`http://localhost:3100`
+
+The sign-in page should display:
+
+- A **Try demo** button below the Sign In section.
+- A footer displaying **FraudGuard build v3**.
+- A green **Backend connected** status.
+
+After signing in, you should see a left sidebar with grouped navigation menus.
+
+If these elements are missing, you may be running an older version. Extract the latest v3 ZIP into a new folder and follow the setup instructions again.
+
+---
+
+### 1. Start the ML Service (Optional)
+
+FraudGuard includes a trained model, so you do not need to train one manually.
+
+The application can use its built-in rule-based engine when the ML service is unavailable.
 
 **Windows (PowerShell)**
+
+Open a new terminal in the project root:
 
 ```powershell
 cd ml_service
@@ -32,28 +96,67 @@ $env:ML_AUTH_DISABLED = "true"
 python -m uvicorn app:app --host 127.0.0.1 --port 8001
 ```
 
+If PowerShell blocks script execution, run:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+Then activate the virtual environment again.
+
 **macOS / Linux**
+
+Open a new terminal in the project root:
 
 ```bash
 cd ml_service
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-ML_AUTH_DISABLED=true 
+export ML_AUTH_DISABLED=true
 python -m uvicorn app:app --host 127.0.0.1 --port 8001
 ```
 
-Check: http://127.0.0.1:8001/health → `{"status":"ok"}`. Leave it running.
-(When it is up, the top bar of the app shows a green **ML service ok**.)
+**Verify the service**
 
-### 2) Backend
+Open:
+
+`http://127.0.0.1:8001/health`
+
+Expected response:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+Keep this terminal running.
+
+When the service is available, the application should display a green **ML service ok** status.
+
+---
+
+### 2. Start the Backend
+
+Open another terminal in the project root.
 
 **Windows (PowerShell)**
 
 ```powershell
 cd backend
 npm install
-copy .env.example .env
+```
+
+Create your local environment file:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Start the backend:
+
+```powershell
 npm start
 ```
 
@@ -62,25 +165,76 @@ npm start
 ```bash
 cd backend
 npm install
+```
+
+Create your local environment file:
+
+```bash
 cp .env.example .env
+```
+
+Start the backend:
+
+```bash
 npm start
 ```
 
-Success looks like: `FraudGuard backend started {"port":5000}`.
-Check: http://localhost:5000/api/v1/health → `"status":"ok"`. Leave it running.
-(`.env.example` works as it is; you only edit `.env` to change settings.)
+The provided `.env.example` contains the default development configuration. You can edit `.env` if you need to change settings.
 
-### 3) Sample data (optional, recommended)
+**Expected startup message:**
+
+```text
+FraudGuard backend started {"port":5000}
+```
+
+**Verify the backend**
+
+Open:
+
+`http://localhost:5000/api/v1/health`
+
+Expected response should indicate:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+Keep this terminal running.
+
+---
+
+### 3. Load Sample Data (Optional, Recommended)
+
+Sample data helps populate the dashboard with transactions, users, and fraud-related activity.
+
+Open another terminal:
+
+**Windows (PowerShell) and macOS/Linux**
 
 ```bash
 cd backend
 npm run seed
 ```
 
-Start the ML service (step 1) **before** seeding, otherwise few transactions get flagged and the dashboard looks quiet.
-More data: `npm run seed -- --users=20 --days=90`.
+For a larger dataset:
 
-### 4) Frontend
+```bash
+npm run seed -- --users=20 --days=90
+```
+
+**Recommendation:** Start the ML service before running the seed command. This allows the sample transactions to be evaluated by the ML service when available.
+
+The application can still run without the ML service.
+
+---
+
+### 4. Start the Frontend
+
+Open another terminal in the project root.
+
+**Windows (PowerShell), macOS, and Linux**
 
 ```bash
 cd frontend
@@ -88,48 +242,44 @@ npm install
 npm start
 ```
 
-Opens http://localhost:3100 (first install takes 2–5 min).
+The application should open automatically at:
+
+`http://localhost:3100`
+
+The first installation may take approximately 2–5 minutes, depending on your internet connection and system.
 
 ---
 
-## Logins
+## 🔐 Login Credentials
 
-| Who                           | Username                 | Password   |
-| ----------------------------- | ------------------------ | ---------- |
-| Admin (created automatically) | `admin`                  | `admin123` |
-| Seeded demo users             | shown in the seed output | `demo1234` |
+Use the following credentials for local development:
 
-Or click **Try demo** on the sign-in page (or open http://localhost:3100/demo/): runs in the browser on sample data,
-needs no backend/account, saves nothing.
+| Account | Username | Password |
+|---|---|---|
+| Admin | `admin` | `admin123` |
+| Seeded demo users | Displayed in seed output | `demo1234` |
 
-## Reset everything
+Alternatively, click **Try demo** on the sign-in page.
 
-Stop the backend (Ctrl+C), delete the database, start again:
+You can also open:
 
-```powershell
-Remove-Item backend\fraudguard.db
-```
+`http://localhost:3100/demo/`
 
-```bash
-rm backend/fraudguard.db
-```
+The demo runs directly in the browser using sample data. It does not require a backend, account, or database and does not save changes.
 
-If the browser still thinks you are signed in, nothing breaks: the app checks the saved login with the server, signs you
-out once and shows "Your session expired".
-
-## Run the tests
-
-```bash
-cd backend && npm test
-cd frontend && npm run test:ci
-cd cognee_service && pip install -r requirements-dev.txt && pytest
-```
+> **Security:** These are development/demo credentials. Change the default admin password and configure secure secrets before using FraudGuard in any shared or production environment.
 
 ---
 
-## Optional: AI Memory (Cognee)
+## 🧠 Optional: AI Memory with Cognee
 
-Needs its own service. In a new terminal:
+FraudGuard supports an optional Cognee service for AI-powered fraud intelligence and contextual memory.
+
+This service runs independently from the main backend.
+
+### 1. Start the Cognee Service
+
+Open a new terminal in the project root.
 
 **Windows (PowerShell)**
 
@@ -138,8 +288,18 @@ cd cognee_service
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-$env:COGNEE_SERVICE_API_KEY = "put-a-random-32-or-more-characters-here"
-$env:LLM_API_KEY = "your-llm-key"
+```
+
+Set the required environment variables:
+
+```powershell
+$env:COGNEE_SERVICE_API_KEY = "your-random-secret-key"
+$env:LLM_API_KEY = "your-llm-api-key"
+```
+
+Start the service:
+
+```powershell
 python -m uvicorn app.main:app_factory --factory --host 127.0.0.1 --port 8002 --workers 1
 ```
 
@@ -150,50 +310,219 @@ cd cognee_service
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-export COGNEE_SERVICE_API_KEY="put-a-random-32-or-more-characters-here"
-export LLM_API_KEY="your-llm-key"
+```
+
+Set the required environment variables:
+
+```bash
+export COGNEE_SERVICE_API_KEY="your-random-secret-key"
+export LLM_API_KEY="your-llm-api-key"
+```
+
+Start the service:
+
+```bash
 python -m uvicorn app.main:app_factory --factory --host 127.0.0.1 --port 8002 --workers 1
 ```
 
-Then add to `backend/.env` and restart the backend:
+### 2. Configure the Backend
 
-```
+Open `backend/.env` and add:
+
+```env
 COGNEE_SERVICE_URL=http://127.0.0.1:8002
-COGNEE_SERVICE_API_KEY=<same value as above>
-COGNEE_PSEUDONYM_SECRET=<another random value, 16+ characters>
+COGNEE_SERVICE_API_KEY=your-random-secret-key
+COGNEE_PSEUDONYM_SECRET=another-random-secret-key
 ```
 
-Log in as admin → **AI Memory** → **Sync now**.
+Use the same `COGNEE_SERVICE_API_KEY` value in both services.
 
-- The first start loads an embedding model in the background; until ready you may see "still starting". Wait a minute.
-- With no `LLM_API_KEY` the graph and search still work; the AI suggestions are off.
+Generate strong, unique secret values instead of using the example placeholders.
 
----
+Restart the backend after updating its environment variables.
 
-## Troubleshooting
+### 3. Sync Fraud Intelligence
 
-| Problem                                                                                     | Fix                                                                                                                                                                                                                                                         |
-| ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sign-in page says **"Backend not reachable"**, or sign-in says "Cannot reach the server"    | The backend isn't running. Open a terminal in `backend/` and run `npm start` (step 2). Check http://localhost:5000/api/v1/health                                                                                                                            |
-| Page blinks / reloads, or you can't sign in after resetting the database or changing `.env` | Fixed in v3 (stale saved logins used to cause a burst of page reloads). Make sure the footer says **build v3**. If it does not, you are on an old copy. One-time cleanup: browser DevTools (F12) → Application → Storage → **Clear site data**, then reload |
-| No **Try demo** button, no sidebar                                                          | You are running an older copy. Use the v3 ZIP in a new folder (see the box at the top)                                                                                                                                                                      |
-| `can't open file '...train_model.pyc:\...\activate'`                                        | Two commands were pasted on one line. Run each on its own line                                                                                                                                                                                              |
-| `ModuleNotFoundError` (pandas, shap, fastapi…)                                              | Activate the venv and use `python -m pip install -r requirements.txt` and `python -m uvicorn ...`                                                                                                                                                           |
-| PowerShell blocks `Activate.ps1`                                                            | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`                                                                                                                                                                                                |
-| Frontend: `allowedHosts[0] should be a non-empty string`                                    | v3 includes `frontend/.env.development` that prevents it. If you still see it: PowerShell `$env:DANGEROUSLY_DISABLE_HOST_CHECK="true"` then `npm start`                                                                                                     |
-| Port 5000/3100 already in use                                                               | Windows: `netstat -ano \| findstr :5000` then `taskkill /PID <PID> /F`. Mac/Linux: `lsof -ti:5000 \| xargs kill`. If the frontend moves to another port, add that origin to `CORS_ALLOWED_ORIGINS` in `backend/.env`                                        |
-| `npm run seed:reset` → `FOREIGN KEY constraint failed`                                      | Happens after a seeded user has logged in. Use "Reset everything" above, then `npm run seed`                                                                                                                                                                |
-| "Invalid credentials"                                                                       | Use `admin` / `admin123`, or reset the database                                                                                                                                                                                                             |
-| Dashboard empty                                                                             | Run step 3, or use **Try demo**                                                                                                                                                                                                                             |
-| Top bar says **ML service down**                                                            | Optional. Start step 1, or ignore it: the app scores with the rule engine                                                                                                                                                                                   |
+1. Start the frontend, backend, and Cognee service.
+2. Log in using the admin account.
+3. Open **AI Memory** from the sidebar.
+4. Select **Sync now**.
+5. Wait for the synchronization process to complete.
+
+**Notes:**
+
+- The first startup may take longer because the embedding model loads in the background.
+- If the service displays **Still starting**, wait a minute and check again.
+- Without an `LLM_API_KEY`, supported graph and search functionality may still work, but AI-generated suggestions will be unavailable.
 
 ---
 
-## More detail
+## 🧪 Running Tests
 
-The original long README (architecture, API reference, security, deployment) is kept in `docs/FULL_README.md`;
-other notes are in `docs/` (`openapi.yaml`, `METHODOLOGY.md`, `TESTING.md`, ...).
-#   F r a u d G u a r d - I n t e l l i g e n c e  
- #   F r a u d G u a r d - I n t e l l i g e n c e  
- #   F r a u d G u a r d - I n t e l l i g e n c e  
- 
+Run each test suite separately from the project root.
+
+### Backend Tests
+
+```bash
+cd backend
+npm install
+npm test
+```
+
+### Frontend Tests
+
+```bash
+cd frontend
+npm install
+npm run test:ci
+```
+
+### Cognee Service Tests
+
+**Windows (PowerShell)**
+
+```powershell
+cd cognee_service
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```
+
+**macOS / Linux**
+
+```bash
+cd cognee_service
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```
+
+---
+
+## 🔄 Reset Everything
+
+To reset the local database:
+
+1. Stop the backend using `Ctrl + C`.
+2. Open a terminal in the project root.
+3. Delete the database file.
+
+**Windows (PowerShell)**
+
+```powershell
+Remove-Item .\backend\fraudguard.db
+```
+
+**macOS / Linux**
+
+```bash
+rm ./backend/fraudguard.db
+```
+
+4. Start the backend again.
+5. Run the sample-data seed command if you want to repopulate the database.
+
+If the browser still shows an old login session, the application should validate it with the backend and sign you out if the session is no longer valid.
+
+---
+
+## 🛠️ Troubleshooting
+
+| Problem | Possible Solution |
+|---|---|
+| **Backend not reachable** | Start the backend and verify `http://localhost:5000/api/v1/health`. |
+| **Cannot reach the server during sign-in** | Check that the backend is running and that the frontend is using the correct backend URL. |
+| **Page blinks or reloads repeatedly** | Confirm that you are running build v3. If necessary, open browser DevTools → Application → Storage → Clear site data, then reload. |
+| **Try demo button is missing** | You may be running an older project copy. Extract the v3 ZIP into a new folder. |
+| **Sidebar is missing** | Verify that the frontend is running the correct v3 build. |
+| **ModuleNotFoundError** | Activate the appropriate Python virtual environment and install the corresponding `requirements.txt`. |
+| **PowerShell blocks Activate.ps1** | Run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, then activate the environment again. |
+| **Frontend: allowedHosts[0] should be a non-empty string** | Check that `frontend/.env.development` is present. If the issue persists, try `$env:DANGEROUSLY_DISABLE_HOST_CHECK="true"` before `npm start` in your development environment. |
+| **Port 5000 or 3100 is already in use** | Stop the process using the port or configure the application to use another available port. |
+| **Port 8001 or 8002 is already in use** | Stop the existing ML/Cognee process or select another port and update the corresponding service URL. |
+| **Dashboard is empty** | Run `npm run seed` from the backend directory or use the Try demo option. |
+| **ML service down** | The ML service is optional. Start it on port 8001 or continue using the rule-based engine. |
+| **Invalid credentials** | Use the local development credentials listed above or reset the database if appropriate. |
+| **Foreign key constraint failed during database reset** | Stop the backend, follow the reset instructions, and seed the database again. |
+
+### Check Which Process Uses a Port
+
+**Windows (PowerShell)**
+
+For port 5000:
+
+```powershell
+netstat -ano | findstr :5000
+```
+
+For port 3100:
+
+```powershell
+netstat -ano | findstr :3100
+```
+
+Stop a process using its PID:
+
+```powershell
+taskkill /PID <PID> /F
+```
+
+**macOS / Linux**
+
+For port 5000:
+
+```bash
+lsof -i :5000
+```
+
+For port 3100:
+
+```bash
+lsof -i :3100
+```
+
+---
+
+## 📁 Project Documentation
+
+Additional technical documentation is available in the `docs/` directory.
+
+| File | Description |
+|---|---|
+| `docs/FULL_README.md` | Detailed project documentation and architecture |
+| `docs/openapi.yaml` | API specification |
+| `docs/METHODOLOGY.md` | Fraud detection methodology |
+| `docs/TESTING.md` | Testing documentation |
+
+Refer to these files for additional implementation details and technical information.
+
+---
+
+## 🔒 Security Notes
+
+- Never commit `.env` files, API keys, passwords, or private credentials.
+- Keep local virtual environments and dependency folders out of version control.
+- Use strong, unique secrets for authentication and service-to-service communication.
+- Change default development credentials before deployment.
+- Do not expose development-only authentication settings in production.
+- Configure HTTPS, CORS, and production environment variables before public deployment.
+
+---
+
+## 👨‍💻 Development
+
+To contribute or modify FraudGuard:
+
+1. Fork or clone the repository.
+2. Create a separate feature branch.
+3. Install the frontend, backend, and Python dependencies as required.
+4. Make your changes and run the relevant tests.
+5. Submit a pull request with a clear description of your changes.
+
+---
+
+**FraudGuard — Detect suspicious activity. Understand fraud patterns. Make smarter decisions.**
