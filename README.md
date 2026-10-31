@@ -194,4 +194,5 @@ Log in as admin → **AI Memory** → **Sync now**.
 The original long README (architecture, API reference, security, deployment) is kept in `docs/FULL_README.md`;
 other notes are in `docs/` (`openapi.yaml`, `METHODOLOGY.md`, `TESTING.md`, ...).
 #   F r a u d G u a r d - I n t e l l i g e n c e  
+ #   F r a u d G u a r d - I n t e l l i g e n c e  
  
